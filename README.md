@@ -156,6 +156,8 @@ flowchart LR
 
 ## 快速启动（已合并 QUICKSTART）
 
+以下命令默认在 `knowledge-base` 仓库根目录执行。如果你当前不在该目录，请先进入该目录；后文 `--plugin-dir .` 中的 `.` 都指当前目录。
+
 如果你希望按“可长期运行、全权限自动化、后台补库策略”来使用，请看完整手册：
 
 - [OPERATIONS_MANUAL.md](./OPERATIONS_MANUAL.md)
@@ -163,7 +165,7 @@ flowchart LR
 ### 1. 启动 Milvus
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 验证 Milvus：
@@ -174,8 +176,10 @@ curl http://localhost:9091/healthz
 
 ### 2. 安装 Python 依赖
 
+以下命令会安装到你当前选择的 Python 环境中。若你使用虚拟环境，请先激活虚拟环境，再执行安装。
+
 ```bash
-pip install "pymilvus[model]"
+python -m pip install -U "pymilvus[model]" sentence-transformers
 ```
 
 ### 3. 准备官方 Milvus MCP Server
@@ -184,17 +188,17 @@ pip install "pymilvus[model]"
 2. 克隆官方仓库到本项目约定路径：
 
 ```bash
-git clone https://github.com/zilliztech/mcp-server-milvus.git ./knowledge-base/mcp/mcp-server-milvus
+git clone https://github.com/zilliztech/mcp-server-milvus.git ./mcp/mcp-server-milvus
 ```
 
-3. 项目根目录已提供 `.mcp.json`，会按官方 README 的 stdio 方式启动 Milvus MCP。
+3. 项目根目录已提供 `.mcp.json`，会按官方 README 推荐的 stdio 方式启动 Milvus MCP。
 4. 通过预检命令确认本地向量化能力可用：
 
 ```bash
-python knowledge-base/bin/milvus-cli.py check-runtime --require-local-model --smoke-test
+python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 ```
 
-### 4. 确认 Playwright-cli 可用（强制）
+### 4. 确认 Playwright-cli 可用（对 Agent 集成场景强制）
 
 `get-info-agent` 的外部抓取链路依赖官方 **Playwright-cli**。调用约束是：优先 `playwright-cli`，其次 `npx --no-install playwright-cli`，不要静默替换成其他抓取器。
 
@@ -204,7 +208,9 @@ python knowledge-base/bin/milvus-cli.py check-runtime --require-local-model --sm
 npm install -g @playwright/cli@latest
 ```
 
-2. 安装 CLI skills（必须）：
+这条命令会把 `playwright-cli` 安装到全局 Node 环境。
+
+2. 如果要给 Claude Code、Codex、Cursor、Copilot 等 Agent 使用，按官方 README 安装 CLI skills（本项目视为必需步骤）：
 
 ```bash
 playwright-cli install --skills
@@ -216,30 +222,34 @@ playwright-cli install --skills
 playwright-cli --help
 ```
 
-4. 如果你采用项目本地安装，也可以使用：
+4. 如果你已经在当前项目里本地安装了 `@playwright/cli`，也可以使用：
 
 ```bash
 npx --no-install playwright-cli --help
 ```
 
-### 5. 加载 Plugin
+### 5. 启动 QA Agent
 
 ```bash
-claude --plugin-dir ./knowledge-base
+claude --plugin-dir . --agent knowledge-base:qa-agent
 ```
 
-### 6. 启动 QA Agent
+这里的 `.` 表示当前目录，因此这条命令要求你当前就在 `knowledge-base` 仓库根目录。如果你当前在它的父目录，请改用：
 
 ```bash
-claude --agent qa-agent
+claude --plugin-dir ./knowledge-base --agent knowledge-base:qa-agent
 ```
 
-或者在项目中配置默认 agent：
+### 6. 如果你已安装并启用本插件，也可在 `.claude/settings.json` 中配置默认 agent
 
-```markdown
-# Agent Settings
-agent: qa-agent
+```json
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "agent": "knowledge-base:qa-agent"
+}
 ```
+
+仅配置 `agent` 不会替代 `--plugin-dir .`。如果你是直接从当前仓库目录临时加载插件，仍需使用上一条命令启动。
 
 ### 7. 开始提问
 

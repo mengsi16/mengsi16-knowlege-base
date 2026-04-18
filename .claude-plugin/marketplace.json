@@ -1,12 +1,16 @@
 {
-  "name": "knowledge-base",
-  "description": "基于Claude Code的个人知识库问答Plugin - QA Agent + Get-Info Agent",
-  "version": "1.0.0",
-  "author": {
+  "name": "knowledge-base-marketplace",
+  "metadata": {
+    "description": "基于 Claude Code 的知识库问答与补库插件市场清单"
+  },
+  "owner": {
     "name": "User"
   },
-  "marketplace": {
-    "tags": ["knowledge-base", "rag", "qa-agent"],
-    "license": "MIT"
-  }
+  "plugins": [
+    {
+      "name": "knowledge-base",
+      "description": "基于Claude Code的个人知识库问答Plugin - QA Agent + Get-Info Agent",
+      "source": "./"
+    }
+  ]
 }

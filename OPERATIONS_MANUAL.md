@@ -47,11 +47,13 @@
 
 ## 2. 一次性准备（Windows）
 
-在 PowerShell 中执行（项目根目录）：
+在 PowerShell 中执行（`knowledge-base` 的父目录）：
 
 ```powershell
-Set-Location "e:\PostGraduate\plan-for-all"
+Set-Location "your\path\to\knowledge-base的父目录"
 ```
+
+下面出现的 `Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"` 表示先进入仓库根目录再执行命令；其中 `claude --plugin-dir .` 里的 `.` 指的也是当前目录。
 
 ### 2.1 安装/确认基础依赖
 
@@ -76,11 +78,23 @@ python -m pip install --user -U "pymilvus[model]" sentence-transformers
 npm install -g @playwright/cli@latest
 ```
 
+说明：
+1. `python -m pip install --user ...` 会安装到当前用户的 Python 用户级目录。
+2. `npm install -g ...` 会安装到全局 Node 环境。
+
+如需更好的 agent 集成，可按官方 README 继续执行；对本项目的 Agent 集成场景，这一步视为必需：
+
+```powershell
+playwright-cli install --skills
+```
+
 验证：
 
 ```powershell
 playwright-cli --help
 ```
+
+如果你使用的是项目本地安装而不是全局安装，请改用项目根目录下的 `npx --no-install playwright-cli --help` 验证。
 
 ### 2.3 准备官方 Milvus MCP Server 代码
 
@@ -99,7 +113,7 @@ git clone https://github.com/zilliztech/mcp-server-milvus.git .\knowledge-base\m
 进入插件目录：
 
 ```powershell
-Set-Location "e:\PostGraduate\plan-for-all\knowledge-base"
+Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"
 ```
 
 启动：
@@ -145,11 +159,11 @@ python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 
 ## 5. 全权限启动 QA Agent（自动化模式）
 
-回到项目根目录执行：
+在 `knowledge-base` 目录执行：
 
 ```powershell
-Set-Location "e:\PostGraduate\plan-for-all"
-claude --plugin-dir ./knowledge-base --agent knowledge-base:qa-agent --dangerously-skip-permissions
+Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"
+claude --plugin-dir . --agent knowledge-base:qa-agent --dangerously-skip-permissions
 ```
 
 这条命令的效果：
@@ -160,8 +174,8 @@ claude --plugin-dir ./knowledge-base --agent knowledge-base:qa-agent --dangerous
 
 安全提示：
 
-1. `--dangerously-skip-permissions` 仅建议在你信任的目录使用。
-2. 该模式下，写文件/执行命令不会再逐条征求确认。
+1. `--dangerously-skip-permissions` 官方仅建议在你信任、最好无互联网访问的隔离环境中使用。
+2. 该模式会绕过权限确认，联网抓取、写文件和执行命令都不会再逐条征求确认。
 
 ---
 
@@ -205,7 +219,7 @@ claude --plugin-dir ./knowledge-base --agent knowledge-base:qa-agent --dangerous
 示例命令（可用于计划任务动作）：
 
 ```powershell
-claude --plugin-dir ./knowledge-base --agent knowledge-base:get-info-agent --dangerously-skip-permissions -p "根据 priority.json 对高优先级站点执行增量补库，并更新 raw/chunks/Milvus 与关键词统计。"
+Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"; claude --plugin-dir . --agent knowledge-base:get-info-agent --dangerously-skip-permissions -p "根据 priority.json 对高优先级站点执行增量补库，并更新 raw/chunks/Milvus 与关键词统计。"
 ```
 
 ### 方案C：单独开一个 Get-Info 长会话
@@ -245,7 +259,7 @@ claude --plugin-dir ./knowledge-base --agent knowledge-base:get-info-agent --dan
 
 1. `docker compose up -d`（在 `knowledge-base` 目录）
 2. `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test`
-3. `claude --plugin-dir ./knowledge-base --agent knowledge-base:qa-agent --dangerously-skip-permissions`
+3. `claude --plugin-dir . --agent knowledge-base:qa-agent --dangerously-skip-permissions`
 4. 若当日有新增 chunk 文件，执行 `python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/*.md"` 做向量入库
 
 每天结束：
@@ -282,6 +296,8 @@ npm install -g @playwright/cli@latest
 playwright-cli --help
 ```
 
+如果你使用的是项目本地安装而不是全局安装，请改用项目根目录下的 `npx --no-install playwright-cli --help` 验证。
+
 ### 10.4 Docker 已开但 Milvus 不健康
 
 处理：
@@ -300,13 +316,13 @@ docker compose logs --tail=200
 ### 一键启动基础环境
 
 ```powershell
-Set-Location "e:\PostGraduate\plan-for-all\knowledge-base"; docker compose up -d; python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
+Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"; docker compose up -d; python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 ```
 
 ### 一键进入全权限 QA
 
 ```powershell
-Set-Location "e:\PostGraduate\plan-for-all"; claude --plugin-dir ./knowledge-base --agent knowledge-base:qa-agent --dangerously-skip-permissions
+Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"; claude --plugin-dir . --agent knowledge-base:qa-agent --dangerously-skip-permissions
 ```
 
 ---
