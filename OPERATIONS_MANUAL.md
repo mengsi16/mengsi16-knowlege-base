@@ -1,4 +1,4 @@
-# Knowledge-Base 全流程使用手册
+# brain-base 全流程使用手册
 
 本手册面向"不想反复手动确认权限、希望尽可能自动化运行"的使用方式。
 
@@ -51,13 +51,13 @@
 
 ## 2. 一次性准备（Windows）
 
-在 PowerShell 中执行（`knowledge-base` 的父目录）：
+在 PowerShell 中执行（`brain-base` 的父目录）：
 
 ```powershell
-Set-Location "your\path\to\knowledge-base的父目录"
+Set-Location "your\path\to\brain-base的父目录"
 ```
 
-下面出现的 `Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"` 表示先进入仓库根目录再执行命令；其中 `claude --plugin-dir .` 里的 `.` 指的也是当前目录。
+下面出现的 `Set-Location "your\path\to\brain-base的父目录\brain-base"` 表示先进入仓库根目录再执行命令；其中 `claude --plugin-dir .` 里的 `.` 指的也是当前目录。
 
 ### 2.1 安装/确认基础依赖
 
@@ -106,7 +106,7 @@ playwright-cli --help
 如果目录不存在：
 
 ```powershell
-git clone https://github.com/zilliztech/mcp-server-milvus.git .\knowledge-base\mcp\mcp-server-milvus
+git clone https://github.com/zilliztech/mcp-server-milvus.git .\brain-base\mcp\mcp-server-milvus
 ```
 
 你当前项目通过插件根目录 `.mcp.json` 接入 MCP server（这是官方插件结构推荐方式）。
@@ -118,7 +118,7 @@ git clone https://github.com/zilliztech/mcp-server-milvus.git .\knowledge-base\m
 进入插件目录：
 
 ```powershell
-Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"
+Set-Location "your\path\to\brain-base的父目录\brain-base"
 ```
 
 启动：
@@ -148,7 +148,7 @@ WebUI 地址：
 
 ## 4. 启动前预检（必须通过）
 
-仍在 `knowledge-base` 目录下执行：
+仍在 `brain-base` 目录下执行：
 
 ```powershell
 python bin/milvus-cli.py inspect-config
@@ -166,16 +166,16 @@ python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 
 ## 5. 全权限启动 QA Agent（自动化模式）
 
-在 `knowledge-base` 目录执行：
+在 `brain-base` 目录执行：
 
 ```powershell
-Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"
-claude --plugin-dir . --agent knowledge-base:qa-agent --dangerously-skip-permissions
+Set-Location "your\path\to\brain-base的父目录\brain-base"
+claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions
 ```
 
 这条命令的效果：
 
-1. 加载 knowledge-base plugin
+1. 加载 brain-base plugin
 2. 指定 QA 为主 agent
 3. 跳过权限确认弹窗（高自动化）
 
@@ -226,7 +226,7 @@ claude --plugin-dir . --agent knowledge-base:qa-agent --dangerously-skip-permiss
 示例命令（可用于计划任务动作）：
 
 ```powershell
-Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"; claude --plugin-dir . --agent knowledge-base:get-info-agent --dangerously-skip-permissions -p "根据 priority.json 对高优先级站点执行增量补库，并更新 raw/chunks/Milvus 与关键词统计。"
+Set-Location "your\path\to\brain-base的父目录\brain-base"; claude --plugin-dir . --agent brain-base:get-info-agent --dangerously-skip-permissions -p "根据 priority.json 对高优先级站点执行增量补库，并更新 raw/chunks/Milvus 与关键词统计。"
 ```
 
 ### 方案C：单独开一个 Get-Info 长会话
@@ -273,9 +273,9 @@ python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 
 每天开始：
 
-1. `docker compose up -d`（在 `knowledge-base` 目录）
+1. `docker compose up -d`（在 `brain-base` 目录）
 2. `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test`。首次运行会下载 BGE-M3 模型（1.4 GB）。
-3. `claude --plugin-dir . --agent knowledge-base:qa-agent --dangerously-skip-permissions`
+3. `claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions`
 4. 若当日有新增 chunk 文件（frontmatter 里必须含 `questions: [...]`），执行 `python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/*.md"` 做 hybrid 入库（CLI 会同时写 chunk 行与 question 行，返回报告会给出 `chunk_rows`/`question_rows` 计数）。
 5. 需要检索验证时，可在命令行跑 multi-query-search 看 RRF 结果：`python bin/milvus-cli.py multi-query-search --query "..." --query "..."`
 6. 偶尔检查自进化整理层状态：看 `data/crystallized/index.json` 的 `skills` 条目数与 `lint-report.md`（如存在）。
@@ -348,7 +348,7 @@ docker compose logs --tail=200
 处理：
 
 ```powershell
-Set-Location "your\path\to\knowledge-base\data\crystallized"
+Set-Location "your\path\to\brain-base\data\crystallized"
 Get-ChildItem index.json.broken-* | Select-Object -First 1
 # 查看备份文件、手动修复后用 organize-agent 运行 crystallize-lint
 ```
@@ -357,7 +357,7 @@ Get-ChildItem index.json.broken-* | Select-Object -First 1
 
 #### 固化层越积越多干扰问答
 
-处理：运行 `crystallize-lint`。在 `claude --plugin-dir . --agent knowledge-base:organize-agent --dangerously-skip-permissions` 会话里说“对固化层做一次 lint”，会自动清理 rejected / 超过 3× TTL / 孤儿 / 损坏条目。
+处理：运行 `crystallize-lint`。在 `claude --plugin-dir . --agent brain-base:organize-agent --dangerously-skip-permissions` 会话里说“对固化层做一次 lint”，会自动清理 rejected / 超过 3× TTL / 孤儿 / 损坏条目。
 
 ---
 
@@ -366,13 +366,13 @@ Get-ChildItem index.json.broken-* | Select-Object -First 1
 ### 一键启动基础环境
 
 ```powershell
-Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"; docker compose up -d; python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
+Set-Location "your\path\to\brain-base的父目录\brain-base"; docker compose up -d; python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 ```
 
 ### 一键进入全权限 QA
 
 ```powershell
-Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"; claude --plugin-dir . --agent knowledge-base:qa-agent --dangerously-skip-permissions
+Set-Location "your\path\to\brain-base的父目录\brain-base"; claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions
 ```
 
 ---
@@ -420,8 +420,8 @@ data/crystallized/
 启动 organize-agent 会话，在其中说自然语言命令即可：
 
 ```powershell
-Set-Location "your\path\to\knowledge-base"
-claude --plugin-dir . --agent knowledge-base:organize-agent --dangerously-skip-permissions
+Set-Location "your\path\to\brain-base"
+claude --plugin-dir . --agent brain-base:organize-agent --dangerously-skip-permissions
 ```
 
 常用自然语言命令：

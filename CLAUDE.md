@@ -214,7 +214,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
   - crystallize-workflow：新增「重要」说明——固化写入是自动的，不需要询问用户
 
 - **固化反馈流程（`-c` 参数）**：
-  - 外部调用文档（`mengsi16-knowledge-base/SKILL.md`）新增 §4.5「固化反馈」章节
+  - 外部调用文档（`skills/brain-base-skill/SKILL.md`）新增 §4.5「固化反馈」章节
   - 说明 `-p -c` 可以一起用：`-c` 是 continue（继续上一次对话），用于给上一轮问答发送反馈
   - 典型两步流程：步骤1 `claude -p "问题"` → 拿到答案 → 步骤2 `claude -p -c "反馈"` → 更新 user_feedback 状态
   - 反馈判断规则：用户未否定（默认）→ confirmed；用户明确否定 → rejected；用户补充信息 → supplement

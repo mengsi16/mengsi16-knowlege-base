@@ -263,7 +263,73 @@ QA、Get-Info、Organize 三个 agent 调度以下 skills：
 6. `knowledge-persistence`：5000 字符阈值分块、合成 QA 生成、raw/chunks 落盘、Milvus hybrid 持久化。
 7. `get-info-workflow`：编排上述子 skill 的执行顺序与失败策略。
 8. `update-priority`：更新关键词和优先级状态。
-9. `mengsi16-knowledge-base`：**外部 Agent 调用说明书**——部署在 `~/.claude/skills` 或 `~/.codex/skills`，教其他 Agent 如何通过 `claude -p ... --plugin-dir ... --agent qa-agent --dangerously-skip-permissions` 调起知识库 qa-agent。
+9. `brain-base-skill`：**外部 Agent 调用说明书**——部署在 `~/.claude/skills` 或 `~/.codex/skills`，教其他 Agent 如何通过 `claude -p ... --plugin-dir ... --agent brain-base:qa-agent --dangerously-skip-permissions` 调起知识库 qa-agent。
+
+---
+
+## 外部 Agent 调用 brain-base
+
+brain-base 不仅能在 Claude Code 中作为 Plugin 使用，任何安装了 Claude Code 的 系统 都可以通过命令行调用它。
+
+### 调用方式对比
+
+| 场景 | 配置方式 | 调用命令 |
+|------|----------|----------|
+| **Plugin 模式** | brain-base 安装在 `~/.claude/plugins/` | `claude --agent brain-base:qa-agent --dangerously-skip-permissions` |
+| **项目级模式** | brain-base 作为普通项目存放 | `claude -p "问题" --plugin-dir <PATH> --agent brain-base:qa-agent --dangerously-skip-permissions` |
+
+### 项目级调用步骤
+
+当 brain-base 作为项目级项目时，其他项目想要调用它：
+
+**1. 部署 brain-base-skill**
+
+将 `skills/brain-base-skill/` 复制到调用方机器的 `~/.claude/skills/` 或 `~/.codex/skills/`：
+
+```bash
+cp -r skills/brain-base-skill ~/.claude/skills/
+```
+
+**2. 确定 brain-base 路径**
+
+调用方需要知道 brain-base 的绝对路径。三种方案：
+
+- **环境变量（推荐）**：在 `.env` 中设置 `BRAIN_BASE_PATH=/absolute/path/to/brain-base`
+- **相对路径**：如果调用方与 brain-base 有固定目录关系（如 `~/projects/brain-base` 和 `~/projects/caller-project`）
+- **Claude Code 查找**：询问 Claude Code "brain-base 项目在哪里"
+
+**3. 调用示例**
+
+```bash
+export BRAIN_BASE_PATH="/home/user/projects/brain-base"
+
+claude -p "Claude Code subagent 怎么配置？" \
+  --plugin-dir "$BRAIN_BASE_PATH" \
+  --agent brain-base:qa-agent \
+  --dangerously-skip-permissions
+```
+
+### 为什么必须 `--dangerously-skip-permissions`
+
+qa-agent 执行时会触发 `get-info-agent` 进行网页抓取、文件写入等操作。如果不带此参数，Claude Code 会在每一步弹出权限确认对话框，导致：
+
+- 作为子进程被调用时无人响应 → 进程挂起
+- 自动化流程被频繁打断
+
+因此从外部 Agent 调用时必须跳过权限确认。
+
+### 固化反馈
+
+问答完成后，需要发送反馈确认固化：
+
+```bash
+claude -p -c "用户未否定，确认固化上一轮答案" \
+  --plugin-dir "$BRAIN_BASE_PATH" \
+  --agent brain-base:qa-agent \
+  --dangerously-skip-permissions
+```
+
+更多细节参见 `skills/brain-base-skill/SKILL.md`。
 
 ---
 
@@ -450,7 +516,7 @@ brain-base/
 │   ├── web-research-ingest/
 │   ├── knowledge-persistence/
 │   ├── update-priority/
-│   └── mengsi16-knowledge-base/
+│   └── brain-base-skill/         # 外部 Agent 调用说明书
 ├── bin/
 │   ├── milvus-cli.py
 │   └── scheduler-cli.py
