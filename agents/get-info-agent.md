@@ -20,13 +20,17 @@ skills:
 ## 核心职责
 
 1. 接收 qa-agent 传来的问题、查询变体和证据缺口说明。
-2. 先执行前置检查：Playwright-cli 可用、Milvus MCP 可用、本地向量化模型可用。
+2. 先执行前置检查：Playwright-cli 可用、Milvus MCP 可用、本地 bge-m3 模型可用。
 3. 读取 `data/priority.json` 与 `data/keywords.db`，确定检索重点。
 4. 调用 `get-info-workflow` 进行全流程编排。
 5. 通过 `web-research-ingest` 与 `playwright-cli-ops` 完成网页搜索、抓取和初步清洗。
-6. 通过 `knowledge-persistence` 完成 raw/chunks 双落盘、LLM 分块和 Milvus 持久化。
+6. 通过 `knowledge-persistence` 完成：
+   - 5000 字符阈值规则下的 LLM 分块（短文档不再被无谓切碎）
+   - 对每个 chunk 生成 3〜5 条合成 QA 问题（doc2query），写入 chunk frontmatter 的 `questions` 字段
+   - raw/chunks 双落盘
+   - hybrid 入库（chunk 行 + question 行，由 `bin/milvus-cli.py ingest-chunks` 自动处理）
 7. 调用 `update-priority` 更新关键词库与优先级状态。
-8. 将新增证据返回给 qa-agent。
+8. 将新增证据返回给 qa-agent，并在返回报告中明确 `chunk_rows` 与 `question_rows` 的实际入库数量。
 
 ## 强制执行规则
 
@@ -55,11 +59,13 @@ skills:
 
 ## 分块要求
 
-1. 先理解 Markdown 结构，再决定切块方式。
-2. 优先按标题层级、步骤组、FAQ、表格、代码块等自然结构切分。
-3. 不得在代码块、表格或步骤列表中间硬切。
-4. 必要时允许轻度重叠，但避免重复污染。
-5. chunk 既要适合 Grep，也要适合向量检索。
+1. **5000 字符硬阈值**：正文 ≤ 5000 字符的文档整篇为 1 个 chunk，不再细切；> 5000 字符才进入语义切分，每块上限 5000 字符。
+2. 先理解 Markdown 结构，再决定切块方式。
+3. 优先按标题层级、步骤组、FAQ、表格、代码块等自然结构切分。
+4. 不得在代码块、表格或步骤列表中间硬切。
+5. 必要时允许轻度重叠（≤ 200 字符），但避免重复污染。
+6. chunk 既要适合 Grep，也要适合向量检索。
+7. 每个 chunk 落盘前必须生成 3〜5 条合成 QA 问题写入 `questions` 字段（`questions: ["...", "...", "..."]` JSON inline）；空目录页可写 `questions: []`。
 
 ## 返回要求
 
@@ -68,6 +74,7 @@ skills:
 1. 新增文档的主题与来源。
 2. raw 路径与 chunk 路径。
 3. 最关键的证据摘要。
-4. 如果失败，指出失败发生在哪个阶段。
+4. `ingest-chunks` 返回的 `chunk_rows` 与 `question_rows` 计数（证明合成 QA 真的入库了）。
+5. 如果失败，指出失败发生在哪个阶段（搜索 / 抓取 / 清洗 / 分块 / 合成 QA / 入库 / 优先级更新）。
 
 工作流程细节请严格遵循 `get-info-workflow` 与 `update-priority` skills。

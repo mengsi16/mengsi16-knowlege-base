@@ -145,9 +145,17 @@ disable-model-invocation: false
 这一层不直接承担分块和落盘细节，而是要求：
 
 1. 把结构化文档草稿交给 `knowledge-persistence`。
-2. 由它完成 raw/chunks 双落盘。
-3. 由它通过 Milvus MCP 或等价持久化层执行入库。
-4. 由它更新 `keywords.db` 与 `priority.json`。
+2. 由它按 5000 字符阈值规则完成分块（≤ 5000 字符整篇为 1 块；> 5000 字符按语义边界切，每块上限 5000）。
+3. 在每个 chunk Markdown 落盘**之前**，由它对该 chunk 调用 LLM 生成 3〜5 条合成 QA 问题，并以 JSON inline 数组形式写入 chunk frontmatter 的 `questions` 字段。
+4. 由它完成 raw/chunks 双落盘。
+5. 由它调用 `python bin/milvus-cli.py ingest-chunks` 完成 hybrid 入库——CLI 会为每个 chunk 写入 1 行 `kind=chunk` + 每条 question 1 行 `kind=question`，全部共享 `chunk_id`。
+6. 由它更新 `keywords.db` 与 `priority.json`。
+
+入库顺序硬约束：
+
+1. **生成 chunk 文本 → 生成合成 QA → 写入 chunk frontmatter → 写盘 → 调 CLI 入库**。
+2. 不允许先入库再回填 questions（那会让 question 行漏掉）。
+3. 不允许跳过合成 QA 直接入库（除非该 chunk 是空目录页，且明确写 `questions: []`）。
 
 ### 步骤8: 返回给 QA Agent
 
@@ -165,12 +173,13 @@ disable-model-invocation: false
 1. 有搜索证据。
 2. 有正文抓取结果。
 3. 有 raw Markdown。
-4. 有 chunk Markdown。
-5. 有 Milvus 入库记录。
-6. 有 `keywords.db` 更新。
-7. 有 `priority.json` 时间戳或权重更新。
+4. 有 chunk Markdown（已遵守 5000 字符阈值规则）。
+5. 每个 chunk 的 frontmatter 含 `questions` 字段（除空目录页外应有 3〜5 个问题）。
+6. 有 Milvus 入库记录，且报告同时含 `chunk_rows` 与 `question_rows` 计数。
+7. 有 `keywords.db` 更新。
+8. 有 `priority.json` 时间戳或权重更新。
 
-缺任何一环，都不应宣称“知识已完成持久化”。
+缺任何一环，都不应宣称"知识已完成持久化"。
 
 ## 7. 失败策略
 

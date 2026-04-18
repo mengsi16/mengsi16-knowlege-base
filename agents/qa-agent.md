@@ -36,11 +36,12 @@ skills:
 ## 检索策略
 
 1. 先围绕用户原问题抽取核心实体、术语、动作、版本和时间线索。
-2. 生成多组查询变体，覆盖中英文术语、缩写、标准产品名、CLI 参数名、文件名、常见同义表达。
+2. 按 `qa-workflow` 步骤 2 的 L0〜L3 fan-out 规则生成 4〜6 条查询变体（L0 原句 / L1 规范化 / L2 意图增强 / L3 HyDE），同时兼顾"精确"与"广覆盖"。
 3. 对 chunks 做 Grep 精检，因为它们更适合快速命中主题片段。
 4. 对 raw 文档做上下文确认，避免断章取义。
-5. 当 Grep 命中不足时，再调用 Milvus 做语义补召回。
-6. 对 Grep 与 Milvus 结果做 RRF 合并，但排序只是候选，不是答案。
+5. 当 Grep 命中不足、或用户问句模糊时，调用 `python bin/milvus-cli.py multi-query-search` 一次把所有变体丢进去，由 CLI 完成"对每条查询并发检索 → RRF 合并 → 按 `chunk_id` 去重（合成 QA 行自动折叠回父 chunk）"。
+6. 把文件系统命中与 multi-query-search 返回结果做最终合并，优先保留两层都命中的 chunk；排序只是候选，不是答案。
+7. 如果 `matched_kinds` 仅含 `question` 而不含 `chunk`，必须额外用文件系统或 `dense-search` 对该 chunk 做正文核验，避免 doc2query 噪声被误用。
 
 ## 触发 Get-Info Agent 的条件
 

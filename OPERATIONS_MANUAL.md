@@ -74,13 +74,14 @@ python -m pip install --user -U uv
 ### 2.2 安装向量化与抓取依赖（全局/用户级）
 
 ```powershell
-python -m pip install --user -U "pymilvus[model]" sentence-transformers
+python -m pip install --user -U "pymilvus[model]" sentence-transformers FlagEmbedding
 npm install -g @playwright/cli@latest
 ```
 
 说明：
 1. `python -m pip install --user ...` 会安装到当前用户的 Python 用户级目录。
-2. `npm install -g ...` 会安装到全局 Node 环境。
+2. `FlagEmbedding` 是默认 BGE-M3 hybrid provider 的底层推理库，首次调用会下载约 1.4 GB 模型到 `%USERPROFILE%\.cache\huggingface\`。
+3. `npm install -g ...` 会安装到全局 Node 环境。
 
 如需更好的 agent 集成，可按官方 README 继续执行；对本项目的 Agent 集成场景，这一步视为必需：
 
@@ -153,7 +154,9 @@ python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 通过标准：
 
 1. `can_vectorize` 为 `true`
-2. 能看到 `local_model`（默认 `all-MiniLM-L6-v2`）
+2. 能看到 `local_model`（默认 `BAAI/bge-m3`；若手动设为 sentence-transformer 则是 `all-MiniLM-L6-v2`）
+3. `resolved_mode` 为 `hybrid`（默认；sentence-transformer 下是 `dense`）
+4. `dense_dim` 跳出实际维度（bge-m3 = 1024；all-MiniLM-L6-v2 = 384）
 
 ---
 
@@ -236,20 +239,29 @@ Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"; claude --
 
 ---
 
-## 8. 推荐的默认本地向量模型
+## 8. 默认本地向量模型
 
-默认建议保持：
+默认已切为：
 
-1. `sentence-transformer`
-2. 模型 `all-MiniLM-L6-v2`
-3. 设备 `cpu`
+1. provider：`bge-m3`
+2. 模型：`BAAI/bge-m3`
+3. 检索模式：`hybrid`（dense 1024 维 + sparse 词级权重）
+4. 设备：`cpu`（有 GPU 时设 `KB_EMBEDDING_DEVICE=cuda`）
 
 理由：
 
-1. 轻量、下载快、CPU 可跑。
-2. 384 维向量，对知识库问答召回足够稳定。
+1. 中英混合语义能力明显优于 all-MiniLM-L6-v2。
+2. 同时产出 dense + sparse，能启动本项目的 hybrid 检索与合成 QA 召回。
+3. CPU 首次启动会下载约 1.4 GB 模型。下载之后本地缓存，不重复下载。
 
-如需中英混合语义能力更强，可升级为 `bge-m3`，但资源和启动时间更高。
+轻量回退选项（如机型弱 / 不需要中文加强）：
+
+```powershell
+$env:KB_EMBEDDING_PROVIDER = "sentence-transformer"
+python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
+```
+
+改后请注意：dense 维度从 1024 变为 384，必须 drop 旧 collection 再重新 ingest-chunks。CLI 会在 dim 不匹配时 fail-fast。
 
 ---
 
@@ -258,9 +270,10 @@ Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"; claude --
 每天开始：
 
 1. `docker compose up -d`（在 `knowledge-base` 目录）
-2. `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test`
+2. `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test`。首次运行会下载 BGE-M3 模型（1.4 GB）。
 3. `claude --plugin-dir . --agent knowledge-base:qa-agent --dangerously-skip-permissions`
-4. 若当日有新增 chunk 文件，执行 `python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/*.md"` 做向量入库
+4. 若当日有新增 chunk 文件（frontmatter 里必须含 `questions: [...]`），执行 `python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/*.md"` 做 hybrid 入库（CLI 会同时写 chunk 行与 question 行，返回报告会给出 `chunk_rows`/`question_rows` 计数）。
+5. 需要检索验证时，可在命令行跑 multi-query-search 看 RRF 结果：`python bin/milvus-cli.py multi-query-search --query "..." --query "..."`
 
 每天结束：
 
@@ -279,13 +292,15 @@ Set-Location "your\path\to\knowledge-base的父目录\knowledge-base"; claude --
 
 1. 改用 `http://localhost:9091/webui/`。
 
-### 10.2 check-runtime 失败（缺少 pymilvus.model）
+### 10.2 check-runtime 失败（缺少 pymilvus.model 或 FlagEmbedding）
 
 处理：
 
 ```powershell
-python -m pip install --user -U "pymilvus[model]" sentence-transformers
+python -m pip install --user -U "pymilvus[model]" sentence-transformers FlagEmbedding
 ```
+
+若报错提示“dense dim 不匹配”或“collection 缺少 sparse 字段”，表示换过 provider 但未重建 collection。处理：使用 Milvus MCP 或 webui drop 旧 collection（默认名 `knowledge_base`）后重跑 ingest-chunks。
 
 ### 10.3 playwright-cli 不可用
 

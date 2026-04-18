@@ -33,7 +33,7 @@ class ChunkRecord:
 
 
 def load_runtime_settings() -> dict[str, Any]:
-    provider = os.environ.get("KB_EMBEDDING_PROVIDER", "sentence-transformer").strip().lower()
+    provider = os.environ.get("KB_EMBEDDING_PROVIDER", "bge-m3").strip().lower()
     retrieval_mode = os.environ.get("KB_RETRIEVAL_MODE", "").strip().lower()
     if not retrieval_mode:
         retrieval_mode = "hybrid" if provider == "bge-m3" else "dense"
@@ -48,7 +48,7 @@ def load_runtime_settings() -> dict[str, Any]:
         "text_field": os.environ.get("KB_MILVUS_TEXT_FIELD", "chunk_text"),
         "output_fields": os.environ.get(
             "KB_MILVUS_OUTPUT_FIELDS",
-            "doc_id,chunk_id,title,section_path,source,url,summary",
+            "kind,doc_id,chunk_id,question_id,title,section_path,source,url,summary",
         ),
         "embedding_provider": provider,
         "retrieval_mode": retrieval_mode,

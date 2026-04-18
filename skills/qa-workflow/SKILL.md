@@ -72,29 +72,56 @@ disable-model-invocation: false
 2. 用户要的是定义、步骤、对比、最佳实践，还是最新变化。
 3. 是否包含版本、日期、平台、工具链约束。
 
-### 步骤2: Query 改写
+### 步骤2: Query 改写（L0〜L3 fan-out）
 
-改写的目标不是“发散”，而是“更容易召回正确证据”。必须遵守以下规则：
+改写的目标是**同时变得更精确（贴近正确术语）和更广泛（多角度兜底）**。Agent 必须输出一组 4 条左右的查询变体，按以下分层产出，**每层至多 1〜2 条**：
+
+| 层级 | 名称 | 作用 | 例子（用户问 "claude code subagent 配置"） |
+|------|------|------|---|
+| L0 | 原句 | 保留用户意图与字面表达 | `claude code subagent 配置` |
+| L1 | 术语规范化 | 缩写展开、口语改标准名、中英别名 | `Claude Code subagent configuration` |
+| L2 | 意图增强 | 补动作词、产品词、版本/时间词 | `如何创建 Claude Code subagent`、`Claude Code subagent YAML frontmatter` |
+| L3 | HyDE 假答 | 让自己虚构一段"理想答案的开头"再当查询用 | `"Claude Code 的 subagent 通过 .claude/agents 下的 YAML 文件定义，必填字段包括 name、description ..."` |
+
+#### 改写硬约束
 
 1. 保留用户原意，不得改变问题目标。
-2. 提取核心术语，补充规范写法。
-3. 展开常见缩写、别名和中英文变体。
-4. 对流程型问题补充动作词。
-5. 对版本敏感问题补充版本词、发布日期词、产品代际词。
+2. **L0 永远要保留**，不要被改写覆盖。
+3. L1 最多 2 条；L2 最多 2 条；L3 最多 1 条。总数控制在 4〜6 条之间。
+4. 中英混合主题必须至少含 1 条中文 + 1 条英文。
+5. 版本敏感问题必须有一条带版本/年份/`latest`/`release`。
+6. 对流程型问题补 `workflow`、`steps`、`guide`、`配置`、`示例`、`best practices`。
+7. **HyDE 段落不要超过 200 字符**，写成一段单段 Markdown 即可。
 
-建议至少形成以下几类查询：
-
-1. **原始查询**：尽量贴近用户原句。
-2. **术语规范化查询**：把缩写替换成全称，把口语替换成标准名词。
-3. **中英混合查询**：同时覆盖中文说法、英文官方说法、CLI 参数名、文件名。
-4. **意图增强查询**：如果问题是“怎么做”，就补充 `workflow`、`steps`、`guide`、`best practices`、`配置`、`示例`。
-5. **版本/时间查询**：当问题可能受时间影响时，加入年份、版本、`latest`、`release`、`更新` 等词。
-
-禁止事项：
+#### 禁止事项
 
 1. 不得为了提高召回率引入与用户无关的主题。
-2. 不得用过长的自然语言段落代替检索词。
-3. 不得把猜测的背景强行写进查询。
+2. 不得把猜测的背景强行写进查询。
+3. 不得在无任何证据时编造产品名 / 版本号。
+4. 不得把超过 200 字符的自然语言段落作为非 HyDE 查询使用。
+
+### 步骤2.5: 调用 multi-query-search 做 fan-out 检索
+
+Agent 把上一步的查询变体直接交给 CLI，由 CLI 完成"对每条查询并发检索 → RRF 合并 → 按 `chunk_id` 去重（合成 question 行会自动折叠回父 chunk）"。
+
+#### 标准调用
+
+```bash
+python bin/milvus-cli.py multi-query-search \
+  --query "claude code subagent 配置" \
+  --query "Claude Code subagent configuration" \
+  --query "如何创建 Claude Code subagent" \
+  --query "Claude Code 的 subagent 通过 .claude/agents 下的 YAML 文件定义..." \
+  --top-k-per-query 20 --final-k 10
+```
+
+#### 执行规则
+
+1. 每条 `--query` 对应一个改写层级；保留改写层级的顺序，便于后续解释结果。
+2. `--top-k-per-query` 默认 20；除非证据特别稀疏，不要调高到 50 以上，避免噪声压过 RRF 信号。
+3. `--final-k` 默认 10；这是返回给 Agent 的"候选证据"，仍需人工核读 chunk 文本。
+4. 返回字段里的 `matched_query_indexes` 表示该 chunk 在哪几条变体中被命中，命中越多越值得信任。
+5. 返回字段里的 `matched_kinds` 含 `question` 表示是合成 QA 命中（说明 query-doc 词汇差距由 doc2query 索引层补上了），含 `chunk` 表示是正文向量直接命中。两者都计入 RRF。
 
 ### 步骤3: 文件系统精确检索
 
@@ -112,7 +139,7 @@ disable-model-invocation: false
 2. 再用动作词或问题意图词检索正文。
 3. 记录命中的文件、段落、标题路径、匹配词。
 
-### 步骤4: Milvus 混合检索
+### 步骤4: Milvus 多查询召回（multi-query-search）
 
 在以下情况进入 Milvus 检索：
 
@@ -120,21 +147,21 @@ disable-model-invocation: false
 2. Grep 命中太少，无法回答。
 3. Grep 命中存在多个相似主题，需要更多语义召回。
 4. Grep 命中的是完整文档，但目标信息埋在长文中，需要靠向量召回补足。
+5. 用户问句模糊（关键词稀少 / 仅有口语描述），文件系统几乎不可能精确命中——这种情况下 multi-query-search 是兜底主力，靠 L2 + L3 + 合成 QA 行把"模糊问"映射到"精确证据"。
 
 Milvus 检索要求：
 
-1. 使用 Query 改写结果中最稳定的 2 到 5 个查询变体。
-2. 保留每个结果的 `doc_id`、标题、来源、URL、相似度分数、摘要。
-3. 不得只看分数不看文本内容。
+1. 直接调用 `python bin/milvus-cli.py multi-query-search` 把步骤 2 产出的 4〜6 条查询变体一次性传入，**不要逐条调 dense-search**——后者拿不到跨查询 RRF 合并的好处。
+2. 保留每个结果的 `kind`、`doc_id`、`chunk_id`、`title`、`url`、`rrf_score`、`matched_query_indexes`、`matched_kinds`、`summary`。
+3. 不得只看 `rrf_score` 不看文本内容；分数只是排序信号，最终证据成立必须靠 chunk 正文。
+4. 当 `matched_kinds` 仅含 `question`（也就是只命中合成 QA 行、没命中正文行）时，必须额外用 `dense-search` 或文件系统对该 chunk 做一次正文核验，避免 doc2query 偏差被当成事实。
 
-### 步骤5: RRF 重排序
+### 步骤5: 与文件系统结果做最终合并
 
-将 Grep 结果和 Milvus 结果合并时：
-
-1. 先去重。
-2. 再使用 RRF 合并排序。
-3. 优先保留在多个查询、多种召回方式中重复出现的结果。
-4. 只把排序高的结果当成“候选证据”，仍需人工核读文本。
+1. 把 Grep / Glob 命中和 multi-query-search 返回的候选放到同一张候选表。
+2. 按 `chunk_id` 再去重一次（multi-query-search 内部已经按 `chunk_id` 去重，跨"文件系统"与"向量库"还需要再合一次）。
+3. 优先保留同时被文件系统命中 + 向量库命中的 chunk。
+4. 只把排序高的结果当成"候选证据"，仍需人工核读文本。
 
 ### 步骤6: 证据充分性判断
 
