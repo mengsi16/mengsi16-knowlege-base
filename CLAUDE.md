@@ -74,13 +74,13 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **根因**：最初的 `milvus_config.py` 默认 `KB_EMBEDDING_PROVIDER=sentence-transformer`、`KB_RETRIEVAL_MODE=dense`，`all-MiniLM-L6-v2` 在中英混合语料下召回明显偏弱，而且完全没有 sparse/词级通道。
 
-**解决**：把默认 provider 切到 `bge-m3`，`KB_RETRIEVAL_MODE` 留空由 provider 自动推断（bge-m3 → hybrid；其他 → dense）。同步改 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\bin\milvus_config.py`、`@e:\PostGraduate\Project\plan-for-all\knowledge-base\.env.example`、`@e:\PostGraduate\Project\plan-for-all\knowledge-base\README.md`、`@e:\PostGraduate\Project\plan-for-all\knowledge-base\OPERATIONS_MANUAL.md`。
+**解决**：把默认 provider 切到 `bge-m3`，`KB_RETRIEVAL_MODE` 留空由 provider 自动推断（bge-m3 → hybrid；其他 → dense）。同步改 `milvus_config.py`、`.env.example`、`README.md`、`OPERATIONS_MANUAL.md`。
 
 ## 问题 2：CLI 直接拒绝 hybrid，`ingest-chunks` 根本走不到 sparse 分支
 
 **根因**：`ingest-chunks` 里有一段硬错误 "当前仅支持 dense 模式入库"——这是老代码占位，但把 BGE-M3 的 dense+sparse 能力完全屏蔽了。这是真实 bug，不是配置问题。
 
-**解决**：在 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\bin\milvus-cli.py` 里：
+**解决**：在 `milvus-cli.py` 里：
 
 - `ensure_dense_collection` 改名 `ensure_collection`，加 `include_sparse` 参数；`include_sparse=True` 时建 `SPARSE_FLOAT_VECTOR` 字段 + `SPARSE_INVERTED_INDEX` 索引
 - 在 collection 已存在时校验 dense dim 与 sparse 字段是否匹配，不匹配 fail-fast（避免 provider 切换后静默写脏数据）
@@ -92,7 +92,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **解决**：把 sparse 输出统一转成 `dict[int, float]`——pymilvus 对 SPARSE_FLOAT_VECTOR 的 insert/search 都原生支持 dict 形式，且跨 scipy 版本 / matrix vs array 子类稳定。
 
-修改在 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\bin\milvus-cli.py:149-239`：
+修改在 `milvus-cli.py:149-239`：
 
 - 新增 `_sparse_matrix_to_row_dicts`：一次 `tocoo()` 遍历整个 `(n, vocab)` 矩阵，按 `coo.row` 分桶到 n 个 dict，**O(nnz) 线性时间**
 - 新增 `_single_sparse_to_dict`：兜底处理 dict / 1D csr_array / `(1, vocab)` 2D 切片 / `indices+data` 四种形状
@@ -113,22 +113,22 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **根因**：原先的 skill 文案对"分块"只说"按 Markdown 语义边界切"，没写长度阈值，导致 agent 把 500 字的短笔记也切成 3 块，每块背景不全。
 
-**解决**：在 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\skills\knowledge-persistence\SKILL.md` 和 `agents/get-info-agent.md` 里加 **5000 字符硬阈值**：
+**解决**：在 `skills/knowledge-persistence/SKILL.md` 和 `agents/get-info-agent.md` 里加 **5000 字符硬阈值**：
 - 正文 ≤ 5000 字符 → 整篇 1 块，不切
 - 正文 > 5000 字符 → 按语义切，每块上限 5000 字符
 
 ## 破坏性操作补充：`drop-collection --confirm`
 
-切换 provider（dense dim 或 schema 字段变化）后必须 drop 旧 collection 再重新 ingest。新增 CLI 子命令 `python bin/milvus-cli.py drop-collection --confirm`，**必须显式 `--confirm` 才真删**，避免误操作。
+切换 provider（dense dim 或 schema 字段变化）后必须 drop 旧 collection 再重新 ingest。新增 CLI 子命令 `python milvus-cli.py drop-collection --confirm`，**必须显式 `--confirm` 才真删**，避免误操作。
 
 ---
 
 ## 下次遇到"ingest 失败 / 检索不对"时的快速检查顺序
 
 1. `docker compose ps` 确认 Milvus standalone 是 `(healthy)`
-2. `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test` 看 `dense_dim` / `sparse_nnz` / `resolved_mode` 是否符合预期
-3. `python bin/milvus-cli.py inspect-config` 确认 `embedding_provider` 和 `output_fields` 里含 `kind` / `question_id`
-4. 如果报 "dense dim 不匹配" 或 "缺少 sparse 字段" → `python bin/milvus-cli.py drop-collection --confirm` 然后重 ingest
+2. `python milvus-cli.py check-runtime --require-local-model --smoke-test` 看 `dense_dim` / `sparse_nnz` / `resolved_mode` 是否符合预期
+3. `python milvus-cli.py inspect-config` 确认 `embedding_provider` 和 `output_fields` 里含 `kind` / `question_id`
+4. 如果报 "dense dim 不匹配" 或 "缺少 sparse 字段" → `python milvus-cli.py drop-collection --confirm` 然后重 ingest
 5. 如果报 "expect 1 row" / "invalid input for sparse float vector" → 检查 `_sparse_matrix_to_row_dicts` 是否被绕过，sparse 值必须是 `dict[int, float]`
 
 ---
@@ -140,11 +140,11 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 **解决**（一次性收敛）：
 
 - 删除 `extracted_urls` 表，溯源完全交给文件系统：`urls: ["...", "..."]` 在 frontmatter + `> 来源: <url>` 在正文 + grep/file-read 查溯源
-- 清理 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\bin\scheduler-cli.py`：删除建表逻辑、`record_extracted_url()` / `query_extracted_urls()`、`record-url` / `query-urls` CLI 子命令
-- 清理 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\skills\knowledge-persistence\SKILL.md` 职责第 7 条（extracted_urls 写入）
-- 清理 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\skills\update-priority\SKILL.md` 原职责第 4 条 + 步骤 3 第 4 条 + 步骤 4 第 5 条（全部 extracted_urls 相关）
-- 补齐 `official_domains` 字段：在 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\README.md` 把 `priority.json` 示例升级到 `version: 1.1.0`，新增 `official_domains` 数组字段及字段说明
-- 改写 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\skills\get-info-workflow\SKILL.md` 步骤 6.1 为**"白名单 + LLM" 两级判定**：先查 `official_domains` 快路径（O(1) 域名匹配），未命中时交 LLM 输出四分类 `official-high` / `official-low` / `community` / `discard`
+- 清理 `scheduler-cli.py`：删除建表逻辑、`record_extracted_url()` / `query_extracted_urls()`、`record-url` / `query-urls` CLI 子命令
+- 清理 `skills/knowledge-persistence/SKILL.md` 职责第 7 条（extracted_urls 写入）
+- 清理 `skills/update-priority/SKILL.md` 原职责第 4 条 + 步骤 3 第 4 条 + 步骤 4 第 5 条（全部 extracted_urls 相关）
+- 补齐 `official_domains` 字段：在 `README.md` 把 `priority.json` 示例升级到 `version: 1.1.0`，新增 `official_domains` 数组字段及字段说明
+- 改写 `skills/get-info-workflow/SKILL.md` 步骤 6.1 为**"白名单 + LLM" 两级判定**：先查 `official_domains` 快路径（O(1) 域名匹配），未命中时交 LLM 输出四分类 `official-high` / `official-low` / `community` / `discard`
 - `update-priority` 新增步骤 5：LLM 判为**高置信度**官方的新域名由其幂等回填 `official_domains`，形成**自学习闭环**；`official-low` 不回填（避免污染）
 - **Milvus schema 完全未动**（`url: VARCHAR(2048)` 保持单数字符串）：官方文档 frontmatter 继续用 `url`（单数），提炼文档用 `urls`（数组），下游解析兼容两种格式，避免 drop collection + 全量重新入库的迁移代价
 
@@ -155,7 +155,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 引用配置字段前要先定义：`official_domains` 被 skill 文本引用时 schema 里并没有这个字段，是悬空引用，应当和 schema 定义一起提交
 - 收敛设计时计划外的发现要直接改计划：本次把原计划"步骤 4（删除旧字段）+ 步骤 7（新增 official_domains 回填）"合并为一次 `multi_edit`，更清晰；原计划"步骤 9 更新 get-info-agent"复核后发现该 agent 文本早已和新设计一致，直接标记"无需变更"
 
-收敛完整记录见 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\planning\2026-04-18-cleanup-extraction-workflow.md`。
+收敛完整记录见 `planning/2026-04-18-cleanup-extraction-workflow.md`。
 
 ---
 
@@ -165,17 +165,17 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **解决**（新增**自进化整理层 Crystallized Skill Layer**）：
 
-- 新增 agent：`@e:\PostGraduate\Project\plan-for-all\knowledge-base\agents\organize-agent.md`——整理层调度 Agent，负责固化 / 刷新 / 反馈 / 健康检查
+- 新增 agent：`agents/organize-agent.md`——整理层调度 Agent，负责固化 / 刷新 / 反馈 / 健康检查
 - 新增 skills：
-  - `@e:\PostGraduate\Project\plan-for-all\knowledge-base\skills\crystallize-workflow\SKILL.md`：固化层命中判断 / 新鲜度判断 / 写入 / 刷新
-  - `@e:\PostGraduate\Project\plan-for-all\knowledge-base\skills\crystallize-lint\SKILL.md`：固化层周期健康检查
+  - `skills/crystallize-workflow/SKILL.md`：固化层命中判断 / 新鲜度判断 / 写入 / 刷新
+  - `skills/crystallize-lint/SKILL.md`：固化层周期健康检查
 - 修改 qa 链路（保持向后兼容）：
-  - `@e:\PostGraduate\Project\plan-for-all\knowledge-base\agents\qa-agent.md`：skills 列表加入 `crystallize-workflow`，加"先查固化层再查 RAG"、"一次满意回答后委托 organize-agent 固化"、"固化层返回时开头标注 📦 / 🔄 / ⚠️"
-  - `@e:\PostGraduate\Project\plan-for-all\knowledge-base\skills\qa-workflow\SKILL.md`：新增「步骤 0：自进化整理层命中判断」与「步骤 9：委托 Organize Agent 固化本轮答案」
-- 新增目录：`data/crystallized/`（被 .gitignore 忽略，运行时由 organize-agent 首次写入时自动创建，与 `data/docs/raw/` / `data/docs/chunks/` 处理方式一致）
+  - `agents/qa-agent.md`：skills 列表加入 `crystallize-workflow`，加"先查固化层再查 RAG"、"一次满意回答后委托 organize-agent 固化"、"固化层返回时开头标注 📦 / 🔄 / ⚠️"
+  - `skills/qa-workflow/SKILL.md`：新增「步骤 0：自进化整理层命中判断」与「步骤 9：委托 Organize Agent 固化本轮答案」
+- 新增目录：`data/crystallized/`（被 .gitignore 忽略，运行时由 organize-agent 首次写入时自动创建）
 - 文档更新：
-  - `@e:\PostGraduate\Project\plan-for-all\knowledge-base\README.md`：三层架构说明 + 新流程图 + 目录结构 + 当前实现状态
-  - `@e:\PostGraduate\Project\plan-for-all\knowledge-base\OPERATIONS_MANUAL.md`：第 12 章自进化整理层日常维护 + 第 10.5 节故障处理
+  - `README.md`：三层架构说明 + 新流程图 + 目录结构 + 当前实现状态
+  - `OPERATIONS_MANUAL.md`：第 12 章自进化整理层日常维护 + 第 10.5 节故障处理
 - **完全不动的文件**（安全边界）：`agents/get-info-agent.md` / 所有 `skills/get-info-*` / `skills/web-research-ingest` / `skills/playwright-cli-ops` / `skills/knowledge-persistence` / `skills/update-priority` / `skills/mengsi16-knowledge-base` / `bin/` 全部、`.mcp.json`、`docker-compose.yml`、Milvus schema。**固化层完全叠加在原有架构之上，损坏时自动降级到原 RAG 主链，零回归风险**。
 
 **固化 skill 结构**（扁平化，不引入 LLM Wiki v2 的置信度评分 / 知识图谱 / consolidation tiers，遵循本文件 Section 2 的 Simplicity First）：
@@ -191,4 +191,38 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 类似 Karpathy LLM Wiki 这种"结构上只是新增一层"的改造，关键是**软依赖设计**：新层损坏、缺失、异常时必须静默降级到原有主链，绝对不能阻断问答。本次设计中 `qa-workflow` 步骤 0 返回 `degraded` 自动进 `miss` 分支，`organize-agent` 调用失败不回溯用户（答案已在步骤 8 给到），这些都是保底设计
 - **不要在第一版就上 LLM Wiki v2 的全部特性**（置信度 / 知识图谱 / typed relationships / consolidation tiers 等）。先把"固化 + 命中 + 刷新 + 反馈"四个最小动作做稳定，等用量起来（>200 条 skill）再考虑升级命中判断机制
 - 固化层的 `execution_trace` + `pitfalls` 不是流水账，是**让下一次抓取更高效的指南**。organize-agent 在首次固化时就要有意识地把"原 URL / 原搜索词 / 原为何有效 / 踩过的坑及避法"记下来——这些是 get-info-agent 刷新时的精准导航
-- 本次计划见 `@e:\PostGraduate\Project\plan-for-all\knowledge-base\planning\2026-04-18-crystallized-skill-layer.md`，含完整风险审查表
+- 本次计划见 `planning/2026-04-18-crystallized-skill-layer.md`，含完整风险审查表
+
+---
+
+## 问题 8：跳步现象与固化流程交互问题
+
+**根因**：
+1. **get-info-agent 跳步**：实际执行中只完成了 raw 文档写入就提前返回，跳过了 chunks 落盘、Milvus 入库、keywords.db 更新、priority.json 更新四步，导致知识未真正持久化
+2. **固化交互误解**：organize-agent 是 subagent（`-p` 非交互模式），无法与用户对话，但早期设计未明确禁止询问用户"是否固化"，造成实现偏差
+
+**解决**：
+
+- **强制 TodoList 机制**：所有三个 agent（qa-agent / get-info-agent / organize-agent）和三个核心 workflow skill（qa-workflow / get-info-workflow / crystallize-workflow）都新增：
+  - `tools` 列表加入 `TodoList`
+  - 新增「## 0. 强制执行：Todo List」章节：要求第一步必须生成 todo，按序执行，每步完成后更新状态为 `completed`，**禁止跳步**
+  - get-info-agent 特别标注：步骤8（knowledge-persistence）和步骤9（update-priority）是**最容易被跳过的步骤**，必须确认 chunks/Milvus/keywords/priority 全部更新后才能标记 completed
+
+- **固化流程明确化**：
+  - qa-agent：固化新答案**不需要询问用户是否固化**——满足条件即自动触发，用户通过下一轮反馈（confirm/reject）参与
+  - organize-agent：**本 Agent 不与用户交互**，禁止在固化流程中询问用户是否确认
+  - crystallize-workflow：新增「重要」说明——固化写入是自动的，不需要询问用户
+
+- **固化反馈流程（`-c` 参数）**：
+  - 外部调用文档（`mengsi16-knowledge-base/SKILL.md`）新增 §4.5「固化反馈」章节
+  - 说明 `-p -c` 可以一起用：`-c` 是 continue（继续上一次对话），用于给上一轮问答发送反馈
+  - 典型两步流程：步骤1 `claude -p "问题"` → 拿到答案 → 步骤2 `claude -p -c "反馈"` → 更新 user_feedback 状态
+  - 反馈判断规则：用户未否定（默认）→ confirmed；用户明确否定 → rejected；用户补充信息 → supplement
+
+- **路径清理**：本文件（CLAUDE.md）清理所有敏感本地绝对路径，改为相对路径引用
+
+**教训**：
+
+- subagent 在 `-p` 模式下**无法与用户交互**，任何需要"问用户确认"的设计在这种模式下都会失效，必须在架构层面明确"谁负责交互、谁只负责写文件"
+- **跳步是 LLM agent 的固有缺陷**：模型倾向于"尽快完成任务"而非"完整执行 checklist"，用 TodoList 工具强制每一步显式标记 completed 是唯一的硬性约束手段
+- 外部 Agent 调用知识库时必须用 `-p -c` 两步：第一步拿答案，第二步发反馈。单步调用会导致固化答案永远停留在 `pending` 状态
