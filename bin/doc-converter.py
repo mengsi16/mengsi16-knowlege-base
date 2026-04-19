@@ -115,6 +115,23 @@ def resolve_mineru_bin(explicit: str | None = None) -> str:
     return value or "mineru"
 
 
+def resolve_mineru_python(mineru_bin: str | None = None) -> str:
+    """Resolve the Python interpreter that should import/run MinerU.
+
+    如果 ``mineru_bin`` 指向某个独立虚拟环境里的 ``mineru(.exe)``，优先使用同目录下的
+    ``python(.exe)``，从而绕过 CLI 的本地 FastAPI + 轮询封装，同时继续复用该环境里
+    已安装的 MinerU / transformers 依赖。
+    """
+    resolved = resolve_mineru_bin(mineru_bin)
+    path = Path(resolved)
+    if path.parent.exists():
+        for candidate_name in ("python.exe", "python"):
+            candidate = path.parent / candidate_name
+            if candidate.is_file():
+                return str(candidate)
+    return sys.executable
+
+
 # ---------------------------------------------------------------------------
 # GPU VRAM guard (MinerU 单文件即占 ~14 GB，16 GB 显卡不能并行)
 # ---------------------------------------------------------------------------
@@ -180,26 +197,73 @@ def check_vram_before_mineru(vram_limit_mb: int) -> None:
         )
 
 
+def _run_mineru_via_python_api(
+    input_path: Path,
+    work_dir: Path,
+    mineru_bin: str | None = None,
+) -> None:
+    """Run MinerU via its synchronous local Python API.
+
+    这样可以绕过 ``mineru`` CLI 内部的"本地 FastAPI + wait_for_task_result 轮询"封装层，
+    避免出现文档已解析完成但客户端卡在结果轮询阶段、最终超时失败的问题。
+    """
+    python_exe = resolve_mineru_python(mineru_bin)
+    script = "\n".join(
+        [
+            "from pathlib import Path",
+            "import sys",
+            "from mineru.cli.common import do_parse",
+            "input_path = Path(sys.argv[1])",
+            "output_dir = Path(sys.argv[2])",
+            "do_parse(",
+            "    output_dir=str(output_dir),",
+            "    pdf_file_names=[input_path.stem],",
+            "    pdf_bytes_list=[input_path.read_bytes()],",
+            "    p_lang_list=['ch'],",
+            "    backend='hybrid-auto-engine',",
+            "    parse_method='auto',",
+            "    formula_enable=True,",
+            "    table_enable=True,",
+            "    f_draw_layout_bbox=False,",
+            "    f_draw_span_bbox=False,",
+            "    f_dump_md=True,",
+            "    f_dump_middle_json=True,",
+            "    f_dump_model_output=True,",
+            "    f_dump_orig_pdf=True,",
+            "    f_dump_content_list=True,",
+            ")",
+        ]
+    )
+    cmd = [python_exe, "-c", script, str(input_path), str(work_dir)]
+    try:
+        proc = subprocess.run(cmd, check=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"未找到可用的 MinerU Python 解释器：{python_exe}。"
+            " 请检查 KB_MINERU_BIN / --mineru-bin 是否指向有效环境。"
+        ) from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"MinerU 本地 Python API 转换失败 (exit={proc.returncode})。"
+            " 具体错误请查看上方终端输出（stderr 已直通）。"
+        )
+
+
 def convert_via_mineru(
     input_path: Path,
     work_dir: Path,
     mineru_bin: str | None = None,
     vram_limit_mb: int | None = None,
 ) -> tuple[str, Path]:
-    """Run MinerU CLI on ``input_path``. Returns ``(markdown_body, md_path)``.
+    """Run MinerU on ``input_path``. Returns ``(markdown_body, md_path)``.
 
     ``md_path`` 指向 MinerU 实际产出的 ``<stem>.md`` 所在位置（其同级
     ``images/`` 目录是提取出来的图片资源），供 caller 根据需要把
     图片搬到长期归档位置并 rewrite MD 里的相对路径。
 
-    stdout/stderr 直接继承父进程（终端），让用户实时看到：
-    - HuggingFace Hub 的模型下载进度条（首次运行 ~2GB）
-    - MinerU 自身的 layout/OCR 解析进度
-    - 任何警告或错误
-
-    代价：脚本无法把 MinerU 的报错文本回填到 JSON errors[] 字段，只能报告退出码。
-    这是正确的取舍——MinerU 单次运行可能几分钟到几十分钟，静默 buffer 等同于
-    "无反馈死等"。用户看到的终端输出即是最权威的诊断信息。
+    默认优先走 MinerU 的本地同步 Python API，而不是 ``mineru`` CLI 的异步轮询封装。
+    原因是用户实测存在"解析已完成但卡在 wait_for_task_result，最终超时"的上游 bug；
+    直接调用本地 API 可以绕过这一层。
 
     **显存保护**：启动前检查 GPU 空闲 VRAM ≥ *vram_limit_mb*（默认 14 GB），
     不够则 fail-fast，避免 OOM 崩溃后残留半成品。
@@ -208,20 +272,7 @@ def convert_via_mineru(
     check_vram_before_mineru(limit)
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [resolve_mineru_bin(mineru_bin), "-p", str(input_path), "-o", str(work_dir)]
-    try:
-        proc = subprocess.run(cmd, check=False)
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "未找到 `mineru` 可执行文件。请先 `pip install 'mineru[pipeline]>=3.1,<4.0'`"
-            "（或 `mineru[core]`；默认 hybrid-transformers 后端需要本地 torch）。"
-        ) from exc
-
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"MinerU 转换失败 (exit={proc.returncode})。"
-            " 具体错误请查看上方终端输出（stderr 已直通）。"
-        )
+    _run_mineru_via_python_api(input_path, work_dir, mineru_bin=mineru_bin)
 
     md_path = _find_mineru_output(work_dir, input_path.stem)
     return md_path.read_text(encoding="utf-8"), md_path
