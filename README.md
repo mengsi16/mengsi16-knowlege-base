@@ -667,19 +667,23 @@ python bin/scheduler-cli.py --keyword "claude-code" --site anthropic
 本仓库当前已完成：
 
 1. `skills` 与 `agents` 全部提升为生产级工作流定义。
-2. 明确 QA、Get-Info、Organize 三类 Agent 的协作边界。
+2. 明确 QA、Get-Info、Organize、Upload 四类 Agent/Workflow 的协作边界。
 3. raw/chunks 双副本持久化 + 5000 字符阈值分块规则。
 4. 默认 BGE-M3 hybrid 入库链路（dense + sparse），`ingest-chunks` 端到端可用。
 5. 合成 QA（doc2query）索引层：每 chunk 3〜5 条问题独立向量化入库。
 6. multi-query-search CLI：L0〜L3 fan-out + RRF 合并 + 按 chunk_id 去重。
 7. 非官方来源内容提炼与溯源标注：白名单快速通道 + LLM 四分类判定 + `update-priority` 自学习回填 `official_domains`，溯源信息全部在提炼文档的 `urls` frontmatter 字段和正文 `> 来源: <url>` 标注中。
-8. **自进化整理层（Crystallized Skill Layer）**：对标 Karpathy LLM Wiki 模式，`organize-agent` + `crystallize-workflow` + `crystallize-lint` 维护 `data/crystallized/` 下的固化答案；命中且新鲜直接返回，命中但过期自动携带原 `execution_trace`/`pitfalls` 调度 get-info-agent 精准刷新。不侵入原始层，固化层损坏时自动降级回 RAG 主链。
-9. **用户本地文档上传入库（Upload Ingest 路径）**：`upload-agent` + `upload-ingest` + `bin/doc-converter.py` 与 `get-info-*` 完全并列，在 `knowledge-persistence` 层汇合；支持 PDF / DOCX / PPTX / XLSX / LaTeX / TXT / MD / PNG / JPG；默认 MinerU 3.1 解析（CJK 强，CPU 可跑）。frontmatter 类型 `source_type: user-upload`，通过 Milvus `enable_dynamic_field=True` 零 schema 迁移。
+8. **自进化整理层（Crystallized Skill Layer）**：`organize-agent` + `crystallize-workflow` + `crystallize-lint` + `bin/crystallize-cli.py` 维护 hot/cold 两层固化答案；低价值问题跳过，高价值问题进入 hot，中等价值进入 cold 观察区；冷藏答案达到命中阈值可自动或手动晋升。
+9. **用户本地文档上传入库（Upload Ingest 路径）**：`upload-agent` + `upload-ingest` + `bin/doc-converter.py` 与 `get-info-*` 并列，在 `knowledge-persistence` 层汇合；支持 PDF / DOCX / PPTX / XLSX / LaTeX / TXT / MD / PNG / JPG / PY / TS / GO / RS。frontmatter 类型 `source_type: user-upload`，通过 Milvus `enable_dynamic_field=True` 零 schema 迁移。
+10. **证据可信度与时效性标注**：qa-workflow 强制输出来源与时效证据表，按 `source_type` 与 `age_days` 分 Tier-1/2/3；>90 天提示时效风险，>180 天建议刷新证据。
+11. **入库内容哈希去重**：raw Markdown body 计算 `content_sha256`，入库前用 `hash-lookup` 查重；历史文档已通过 `backfill-hashes` 补齐；`find-duplicates` 可做定期体检。
+12. **离线 smoke test 框架**：`pytest tests/smoke -q` 覆盖 crystallize-cli、milvus-cli 文件系统命令、P2-1 hash 去重三件套，共 47 个测试；默认跳过需 Milvus 的集成测试。
+13. **进度与验收文档**：`BRAIN_BASE_CHARTER.md` 保存设计宪章，`BRAIN_BASE_PROGRESS.md` 用表格追踪痛点完成度与剩余路线图。
 
-如果你后续继续扩展这个项目，建议优先补齐：
+当前高优先级痛点（P0/P1）已完成，P2 已完成内容哈希去重。后续扩展建议按真实使用反馈排序：
 
-1. chunk 质量回归测试与去重策略（自动化校验 5000 字符阈值与 questions 字段完整性）。
-2. 评估集（gold queries → expected chunk_ids），跑 multi-query-search 量化召回率。
-3. 合成 QA 离线生成脚本（当前由 agent 在写盘前生成；可补一个 `synthesize-questions` CLI 用于历史 chunk 回填）。
-4. 固化层命中判断从“LLM 语义判别”升级为“embedding 相似度 + LLM 二校验”的两级筛选（当固化 skill 数超过 200 条后再做）。
-5. 固化答案批量入 Milvus，让 RAG 召回时也能命中已有的 Crystallized Skill——LLM Wiki v2 的"crystallization from exploration"思路。
+1. 批量上传进度 + 断点续传（P2-2）：当开始一次性导入大量 PDF/论文时再做。
+2. 检索质量评估集（P2-3）：准备改 multi-query-search / RRF / embedding 配置前先做，作为 recall@K 护栏。
+3. 固化反馈自动闭环（T4）：减少 `pending` 到 `confirmed` 对用户手动反馈的依赖。
+4. 数据完整导出（P3-3）：当知识库开始跨机器迁移或团队共享时再做。
+5. 固化层 embedding 索引（P3-1）：当固化 skill 数量超过 200 条后再做。

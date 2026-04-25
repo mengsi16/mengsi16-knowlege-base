@@ -182,8 +182,12 @@ get-info-agent 在执行本 workflow 前，**必须先调用 `TodoList` 工具**
 
 ##### 第 1 级：白名单快速路径
 
-1. 从文档 URL 提取域名（或"域名+路径前缀"，如 `github.com/anthropics`）。
-2. 查询 `priority.json` 的 `official_domains` 数组。
+1. 从文档 URL 提取待匹配模式：
+   - 先提取完整域名（如 `www.coze.com`）。
+   - 再提取域名+路径前缀（如 `www.coze.com/open/docs`），逐级向上截取路径（`/open/docs/guides/x` → `/open/docs/guides` → `/open/docs` → `/open`），直到找到匹配项或路径耗尽。
+2. 查询 `priority.json` 的 `official_domains` 数组，匹配规则：
+   - **纯域名模式**：白名单项不含 `/`（如 `docs.anthropic.com`），则仅匹配域名。`www.coze.com` 匹配 `www.coze.com`，也匹配 `coze.com`（子域名自动匹配父域名）。
+   - **域名+路径前缀模式**：白名单项含 `/`（如 `www.coze.com/open/docs`），则 URL 的域名+路径必须以此项为前缀才算命中。`www.coze.com/open/docs/guides/function_overview` 命中 `www.coze.com/open/docs`。
 3. 命中 → 直接归类为 `official-doc`，不再交 LLM 判断。
 
 ##### 第 2 级：LLM 综合判断（白名单未命中时）

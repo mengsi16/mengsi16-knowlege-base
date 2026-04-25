@@ -514,17 +514,18 @@ qa-agent（发现 hit_stale）
 
 **P0-2 端到端 smoke test 脚本**✅ 已交付（CLI 级 pytest 框架）
 
-**实现方式**：pytest smoke test 框架，覆盖 `bin/crystallize-cli.py` 和 `bin/milvus-cli.py` 两个 CLI 的**纯文件系统命令**（无需 Milvus / 网络）。34 个测试 ~6 秒跑完。
+**实现方式**：pytest smoke test 框架，覆盖 `bin/crystallize-cli.py` 和 `bin/milvus-cli.py` 两个 CLI 的**纯文件系统命令**（无需 Milvus / 网络）。47 个测试 ~30 秒跑完。
 
 **已覆盖（offline，`pytest tests/smoke -q` 默认运行）**：
 
-- `crystallize-cli.py`: `stats` / `list-hot` / `list-cold` / `show-cold` / `hit` / `promote` / `demote` — 七个命令的完整行为契约（21 测试）
-- `milvus-cli.py`: `list-docs` / `show-doc` / `stats` / `stale-check` — 纯文件系统命令 + JSON 输出结构契约（13 测试）
+ - `crystallize-cli.py`: `stats` / `list-hot` / `list-cold` / `show-cold` / `hit` / `promote` / `demote` — 七个命令的完整行为契约（21 测试）
+ - `milvus-cli.py`: `list-docs` / `show-doc` / `stats` / `stale-check` — 纯文件系统命令 + JSON 输出结构契约（13 测试）
+ - `milvus-cli.py` P2-1: `hash-lookup` / `find-duplicates` / `backfill-hashes` — 内容哈希去重、重复检测、历史 backfill（13 测试）
 
 **尚未覆盖（需 Milvus 可用，标 `requires_milvus` 默认跳过）**：
 
-- `milvus-cli check-runtime` / `ingest-chunks` / `dense-search` / `hybrid-search` / `multi-query-search`
-- 真实的 upload-agent 端到端（PDF → raw → chunks → Milvus → 召回验证）
+ - `milvus-cli check-runtime` / `ingest-chunks` / `dense-search` / `hybrid-search` / `multi-query-search`
+ - 真实的 upload-agent 端到端（PDF → raw → chunks → Milvus → 召回验证）
 
 **具体落地**：
 
@@ -533,14 +534,15 @@ qa-agent（发现 hit_stale）
 3. `tests/conftest.py` — 共享 fixtures：`empty_crystal_dir` / `seeded_crystal_dir` / `empty_docs_dirs` / `seeded_docs_dirs` + `run_crystallize` / `run_milvus` subprocess 包装器
 4. `tests/smoke/test_crystallize_cli.py` — 21 个测试，覆盖冷热分层生命周期、原子写入、confirmed 保护机制
 5. `tests/smoke/test_milvus_cli.py` — 13 个测试，覆盖 P1-4 trust_tier / evidence_date 字段
-6. `tests/README.md` — 运行说明 + 覆盖矩阵 + 对 agent 的价值说明
+6. `tests/smoke/test_content_hash.py` — 13 个测试，覆盖 P2-1 hash lookup / duplicates / backfill / CRLF 规范化
+7. `tests/README.md` — 运行说明 + 覆盖矩阵 + 对 agent 的价值说明
 
 **核心设计价值**：保护 CLI 的 **JSON 输出结构**。qa-agent / organize-agent / get-info-agent 都依赖这些 CLI 输出做下游判断——一旦字段名漂移或增删 top-level key，agent 解析会悄悄错。smoke test 第一时间捕获。
 
 **用户视角**：
 
 ```powershell
-# 修改 CLI 后立即运行（<10 秒）
+# 修改 CLI 后立即运行（约 30 秒）
 python -m pytest tests/smoke -q
 ```
 
@@ -572,7 +574,7 @@ python bin/milvus-cli.py show-doc <doc_id>
 |------|------|------|
 | 🟢 Tier-1 高可信 | `official-doc` 且证据年龄 ≤ 90 天 | Anthropic 官方文档，上周抓取 |
 | 🟡 Tier-2 中可信 | `extracted`（溯源标注）≤ 180 天；或 `official-doc` 90〜180 天 | 社区文章提炼；略过期的官方文档 |
-| � Tier-3 低可信 | `user-upload`；任何 > 180 天；`source_type` 缺失 | 用户自传资料；过期文档；早期未打标签的数据 |
+| Tier-3 低可信 | `user-upload`；任何 > 180 天；`source_type` 缺失 | 用户自传资料；过期文档；早期未打标签的数据 |
 
 整篇答案可信度**取所有证据中的最低档**（木桶效应）。每次回答必须附 `📚 来源与时效` 证据表；证据年龄 > 90 天强制 `⚠️ 时效性提示`；> 180 天强制 `💡 获取更新证据`。
 
@@ -697,5 +699,5 @@ python bin/export.py --output brain-base-backup-<date>.tar.gz
 
 ---
 
-*最后更新：2026-04-23*
+*最后更新：2026-04-25*
 *本文档由 Windsurf Cascade 与用户协作撰写，基于对全部 agents/skills/bin 文件的完整分析。*

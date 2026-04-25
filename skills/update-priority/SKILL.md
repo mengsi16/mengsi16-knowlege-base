@@ -79,7 +79,10 @@ disable-model-invocation: false
 
 1. 只回填 LLM 标记为高置信度的 official 域名（置信度不足的不写入，避免污染白名单）。
 2. 幂等写入：已存在的域名直接跳过。
-3. 写入格式：格式统一为小写域名（如 `docs.anthropic.com`）；如需以路径前缀限定（如 `github.com/anthropics`），直接写完整前缀。
+3. 写入格式与匹配规则：
+   - **纯域名**：格式统一为小写域名（如 `docs.anthropic.com`），匹配时子域名自动匹配父域名。
+   - **域名+路径前缀**：当 URL 的路径部分也具有官方文档特征时（如 `www.coze.com/open/docs`、`github.com/anthropics`），写入完整域名+路径前缀。匹配时 URL 必须以此项为前缀才算命中。
+   - 优先写入更精确的模式：如果 `www.coze.com/open/docs` 已在白名单，就不需要再单独写入 `www.coze.com`（路径前缀已覆盖）。
 4. 维护和审计：白名单仅作为分类加速通道，不是安全边界；用户可随时手动编辑 `priority.json` 刪除误收项。
 
 ## 5. 失败策略
