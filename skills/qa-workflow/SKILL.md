@@ -11,15 +11,16 @@ disable-model-invocation: false
 qa-agent 在执行本 workflow 前，**必须先调用 `TodoList` 工具**，按以下步骤生成 todo 列表，然后严格按列表顺序执行。每完成一步立即更新状态为 `completed`，再进入下一步。**禁止跳步**。
 
 典型 todo 模板：
-1. 步骤0：自进化整理层命中判断 → pending
-2. 步骤1：规范化用户问题 → pending
-3. 步骤2：Query 改写（L0〜L3 fan-out） → pending
-4. 步骤3：本地证据检索（chunks → raw → Milvus） → pending
-5. 步骤4：证据充分性判断 → pending
-6. 步骤5：必要时触发 get-info-agent → pending
-7. 步骤6：基于已验证证据生成答案 → pending
-8. 步骤7：答案格式化与来源标注 → pending
-9. 步骤8：委托 organize-agent 固化答案 → pending
+1. 步骤−1：基础设施快速探测（Milvus / Playwright 可用性） → pending
+2. 步骤0：自进化整理层命中判断 → pending
+3. 步骤1：规范化用户问题 → pending
+4. 步骤2：Query 改写（L0〜L3 fan-out） → pending
+5. 步骤3：本地证据检索（chunks → raw → Milvus，Milvus 不可用时自动跳过） → pending
+6. 步骤4：证据充分性判断 → pending
+7. 步骤5：必要时触发 get-info-agent（get-info 不可用时进入降级分支） → pending
+8. 步骤6：基于已验证证据生成答案（或降级回答） → pending
+9. 步骤7：答案格式化与来源标注 → pending
+10. 步骤8：委托 organize-agent 固化答案（降级模式下跳过） → pending
 
 **步骤8 不可跳过**：只要满足固化条件（答案完整、有证据、非一次性问题、无敏感信息、非 hit_fresh 直接返回），就必须触发 organize-agent。固化失败不影响已返回的答案。
 
@@ -74,6 +75,50 @@ qa-agent 在执行本 workflow 前，**必须先调用 `TodoList` 工具**，按
 
 ## 5. 执行流程
 
+### 步骤−1: 基础设施快速探测（非阻断）
+
+本步骤在所有业务动作之前运行，目的是为后续步骤提供一个 **基础设施状态快照**，避免后面在多处重复探测、或者被缺失组件阻断。
+
+#### −1.1 探测动作（快速、宽容）
+
+执行以下检查，**不以失败中断流程**：
+
+1. `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test` －— 探测 Milvus + bge-m3。异常或非零退出 → 标记 `milvus_available = false`。
+2. `playwright-cli --help` 或等价命令 — 探测 Playwright-cli。命令不存在或非零退出 → 标记 `playwright_available = false`。
+3. 检查 `data/crystallized/` 目录和 `index.json` 是否可读 — 失败 → 标记 `crystallized_available = false`（不阻断步骤 0 进入 degraded 分支）。
+
+保存成结构化的 `infra_status`：
+
+```json
+{
+  "milvus_available": true,
+  "playwright_available": false,
+  "crystallized_available": true,
+  "get_info_reachable": "unknown",
+  "probed_at": "2026-04-23T14:22:00Z"
+}
+```
+
+`get_info_reachable` 字段的值依赖 `playwright_available`；也可在步骤 7 真正触发 get-info-agent 时再次评估。
+
+#### −1.2 降级预览
+
+根据 `infra_status` 有以下分支预处理：
+
+| 场景 | 后续影响 |
+|------|---------|
+| 三项均可用 | 完整走步骤 0〜9，get-info 可触发 |
+| `milvus_available=false` | 步骤 4 跳过 Milvus、仅依靠文件系统 Grep；步骤 6 的充分性门卡相应放宽 |
+| `playwright_available=false` | 步骤 7 不得触发 get-info-agent，直接进入步骤 8.2 的**降级回答**分支 |
+| `crystallized_available=false` | 步骤 0 静默返回 `degraded`，步骤 9 跳过固化委托 |
+| 三项都不可用 | 步骤 3〜4 仅文件系统，步骤 8.2 强制降级回答，步骤 9 跳过固化 |
+
+#### −1.3 硬约束
+
+1. 本步骤的目的是 **收集状态**，不是 **判定失败**。任何探测返回状态不得肽断用户问答。
+2. 探测耗时必须控制在 **≤ 10 秒**；单个命令超时直接标为不可用。
+3. `infra_status` 在后续步骤中作为上下文延续使用，不要在每个步骤重复探测。
+
 ### 步骤0: 自进化整理层命中判断（固化层短路优化）
 
 本步骤是整个 qa-workflow 的**第一个**动作，早于所有 RAG 活动。由 `crystallize-workflow` skill 执行命中判断。
@@ -90,21 +135,32 @@ qa-agent 在执行本 workflow 前，**必须先调用 `TodoList` 工具**，按
 }
 ```
 
-返回状态与后续动作：
+返回状态与后续动作（hit_check 模式两阶段：先 hot 后 cold，详见 crystallize-workflow §4.1）：
 
 | status | 含义 | 后续动作 |
 |---|---|---|
-| `hit_fresh` | 命中固化 skill 且未超 TTL | 直接返回 `answer_markdown`，在开头附标注 `> 📦 来自自进化整理层固化答案（skill_id: ..., revision: N, 最后确认 YYYY-MM-DD）`，**结束本次 qa-workflow**，不走后续步骤 |
-| `hit_stale` | 命中但已超 TTL | 通过 `Agent` tool 呼叫 `organize-agent` 的 refresh 模式，organize-agent 携带 `execution_trace` + `pitfalls` 调 get-info-agent 补库，补库完成后本 skill 从步骤 1 重跑生成答案，最终回答开头附标注 `> 🔄 固化答案已超 TTL，本轮已自动刷新（skill_id: ..., revision: N）`；若刷新失败，降级返回旧答案并标 `> ⚠️ ...最近一次刷新失败...` |
-| `miss` | 固化层无命中 | 继续走步骤 1 以后的完整 RAG 流程 |
+| `hit_fresh` | hot 层命中且未超 TTL | 直接返回 `answer_markdown`，在开头附标注 `> 📦 来自自进化整理层固化答案（skill_id: ..., revision: N, 最后确认 YYYY-MM-DD）`，**结束本次 qa-workflow**，不走后续步骤 |
+| `hit_stale` | hot 层命中但已超 TTL | 通过 `Agent` tool 呼叫 `organize-agent` 的 refresh 模式，organize-agent 携带 `execution_trace` + `pitfalls` 调 get-info-agent 补库，补库完成后本 skill 从步骤 1 重跑生成答案，最终回答开头附标注 `> 🔄 固化答案已超 TTL，本轮已自动刷新（skill_id: ..., revision: N）`；若刷新失败，降级返回旧答案并标 `> ⚠️ ...最近一次刷新失败...` |
+| `cold_promoted` | cold 层命中且刚达到晋升阈值，已自动 promote 到 hot | 视同 `hit_fresh`，但标注改为 `> ⬆️ 来自自进化整理层固化答案（skill_id: ..., 本轮由 cold 层晋升, hit_count 达到阈值）` |
+| `cold_observed` | cold 层命中但未达晋升阈值，hit_count +1 已记录 | **不直接返回**；把 `cold_evidence_summary` 作为辅助证据携带进入步骤 1，走完整 RAG 流程。最终回答时把冷藏摘要作为一条候选证据纳入证据表（按 `extracted` 类型处理） |
+| `miss` | hot 和 cold 层都无命中 | 继续走步骤 1 以后的完整 RAG 流程 |
 | `degraded` | 固化层读取失败或损坏 | 静默进入 `miss` 分支，写日志，**不阻断** qa-workflow |
 
 #### 0.2 硬约束
 
 1. 固化层是**软依赖**：`data/crystallized/` 不存在、`index.json` 损坏、命中判断异常等情况必须静默降级到 `miss`，绝对不得因固化层异常阻断问答。
-2. 命中 `hit_fresh` 后直接结束，**不要为了“稳妙”再跑一次 RAG 核验**（那会抵消固化层的性能收益）；企业级校验由周期 `crystallize-lint` 和用户反馈控制。
+2. 命中 `hit_fresh` 或 `cold_promoted` 后直接结束，**不要为了"稳妥"再跑一次 RAG 核验**（那会抵消固化层的性能收益）；企业级校验由周期 `crystallize-lint` 和用户反馈控制。
 3. `hit_stale` 分支执行完成后，步骤 9 仍须触发（固化层 `organize-agent` 的 refresh 模式内部已做版本更新，但要确保反馈通道畅通）。
-4. 当用户问题明显带时效性信号（“最新”“最近”“当前版本”）且命中的 skill 已超 TTL 的 50% 时，即使形式上 `hit_fresh`，也应视同 `hit_stale` 走刷新路径（由 LLM 判断用户时效性意图较强时）。
+4. 当用户问题明显带时效性信号（"最新""最近""当前版本"）且命中的 skill 已超 TTL 的 50% 时，即使形式上 `hit_fresh`，也应视同 `hit_stale` 走刷新路径（由 LLM 判断用户时效性意图较强时）。
+
+#### 0.3 冷藏观察（cold_observed）使用规则
+
+进入此分支时：
+
+1. `crystallize-workflow` 已经把 `hit_count += 1` 和 `last_hit_at` 写入 `index.json`，**不需要本 workflow 再写**。
+2. qa-workflow 继续走完整 RAG（步骤 1〜8），但**必须**把 `cold_evidence_summary` 作为一条额外候选证据纳入步骤 5 的合并表，**按 `source_type: extracted` 处理**（因为冷藏条目本身就是 LLM 综合过的次级证据，不是原始文档）。
+3. 证据表里显示为：`| 冷藏层摘要 | 🟡 提炼（cold） | crystallized:<skill_id> | YYYY-MM-DD | N 天 |`，让用户看到这条证据的冷藏身份。
+4. 本 workflow 的最终回答如果确实用到了冷藏摘要，在步骤 8.1.2 的整体 `可信度` 之后、`⚠️ 时效性提示` 之前额外加一行：`> ❄️ 本答案参考了冷藏固化条目 <skill_id>（hit_count: N），继续反复命中将自动晋升到活跃层。`
 
 ### 步骤1: 规范化用户问题
 
@@ -191,13 +247,15 @@ python bin/milvus-cli.py multi-query-search \
 
 ### 步骤4: Milvus 多查询召回（multi-query-search）
 
+**前置前提**：`infra_status.milvus_available == true`。若 `false`，本步骤整体跳过，在证据汇总里标记 `milvus_skipped: true`，由步骤 6 的充分性门卡和步骤 7 的降级决策考虑后续动作。
+
 在以下情况进入 Milvus 检索：
 
 1. Grep 无命中。
 2. Grep 命中太少，无法回答。
 3. Grep 命中存在多个相似主题，需要更多语义召回。
 4. Grep 命中的是完整文档，但目标信息埋在长文中，需要靠向量召回补足。
-5. 用户问句模糊（关键词稀少 / 仅有口语描述），文件系统几乎不可能精确命中——这种情况下 multi-query-search 是兜底主力，靠 L2 + L3 + 合成 QA 行把"模糊问"映射到"精确证据"。
+5. 用户问句模糊（关键词稀少 / 仅有口语描述），文件系统几乎不可能精确命中——这种情况下 multi-query-search 是兵底主力，靠 L2 + L3 + 合成 QA 行把“模糊问”映射到“精确证据”。
 
 Milvus 检索要求：
 
@@ -205,6 +263,7 @@ Milvus 检索要求：
 2. 保留每个结果的 `kind`、`doc_id`、`chunk_id`、`title`、`url`、`rrf_score`、`matched_query_indexes`、`matched_kinds`、`summary`。
 3. 不得只看 `rrf_score` 不看文本内容；分数只是排序信号，最终证据成立必须靠 chunk 正文。
 4. 当 `matched_kinds` 仅含 `question`（也就是只命中合成 QA 行、没命中正文行）时，必须额外用 `dense-search` 或文件系统对该 chunk 做一次正文核验，避免 doc2query 偏差被当成事实。
+5. **控制耗时与稳定性**：如果执行期间 `milvus-cli.py` 非零退出（例如 Milvus 服务在探测后断线），动态更新 `infra_status.milvus_available = false` 並跳出本步骤；不得令整个 qa-workflow 崩溃。
 
 ### 步骤5: 与文件系统结果做最终合并
 
@@ -232,14 +291,18 @@ Milvus 检索要求：
 4. 命中内容只有摘要，没有正文上下文。
 5. 用户明确要求“最新”、“今天”、“最近变化”、“官方最新文档”。
 
-### 步骤7: 触发 Get-Info Agent
+### 步骤7: 触发 Get-Info Agent（含降级分支）
 
-满足任一条件就应触发 `get-info-agent`：
+#### 7.1 正常触发条件
 
-1. 本地检索无有效命中。
-2. 本地检索有命中但证据不足。
-3. 本地命中内容明显过时。
-4. 用户明确要求补充最新文档、官方资料、站外资料。
+满足以下 **所有条件** 时才真正触发 `get-info-agent`：
+
+1. 符合业务需要（以下任一）：
+   - 本地检索无有效命中。
+   - 本地检索有命中但证据不足。
+   - 本地命中内容明显过时。
+   - 用户明确要求补充最新文档、官方资料、站外资料。
+2. 基础设施可用：`infra_status.playwright_available == true`。
 
 触发时应传递尽可能完整的上下文：
 
@@ -250,15 +313,110 @@ Milvus 检索要求：
 5. 是否强调时效性。
 6. 触发目标必须是 `get-info-agent`，不要由 QA 直接调用 `get-info-workflow` 或持久化类 skill。
 
-### 步骤8: 基于证据回答
+#### 7.2 降级分支（核心）
 
-回答时必须遵守：
+以下任一成立就进入降级分支，跳过 get-info-agent 触发，直接进入步骤 8 中的 **降级回答模式**（8.2）：
+
+1. `infra_status.playwright_available == false`。
+2. get-info-agent 返回 `infra_status: { status: "degraded", ... }`。
+3. get-info-agent 调用抛异常或超时（建议设 2 分钟硬上限）。
+
+**进入降级分支时**：
+
+1. 在内部证据上下文记录 `degraded_reason`（如 `"playwright unavailable"` / `"get-info timeout"`）。
+2. 不触发 get-info-agent，立即进入步骤 8。
+3. 用户那一侧仅看到步骤 8.2 输出的降级答案，不会看到 "触发失败" 的错误。
+
+#### 7.3 硬约束
+
+1. 绝不允许因基础设施问题直接向用户返回错误终结会话。基础设施不可用 → **降级回答**；绝不中断。
+2. 降级是 **最后手段**。能成功触发 get-info-agent 的问题不得逐降级。
+3. 降级决策要在本步骤中明确产出，并在步骤 8 的答案中显示标注，不得隐藏。
+
+### 步骤8: 基于证据回答（正常 / 降级两种模式）
+
+#### 8.1 正常模式（有合格本地证据或成功补库）
+
+回答时必须遵守的**基本规则**：
 
 1. 先回答用户真正的问题，不要先铺陈一大段背景。
 2. 所有关键结论都要能在证据中找到对应依据。
 3. 如果答案部分来自新抓取资料，要明确说明。
-4. 如果仍有空白，要明确说“现有证据不足以确认”。
+4. 如果仍有空白，要明确说"现有证据不足以确认"。
 5. 引用文件时优先指向 chunk 文件，再在必要时补 raw 文件。
+
+#### 8.1.1 可信度三档分级（必填）
+
+每篇证据按 `source_type` 和"证据年龄"（从 `fetched_at` frontmatter 字段或 `doc_id` 末尾的 `-YYYY-MM-DD` 提取）打一个档位：
+
+| 档位 | 条件 | Emoji |
+|------|------|-------|
+| **Tier-1 高可信** | `source_type == official-doc` **且** 证据年龄 ≤ 90 天 | 🟢 |
+| **Tier-2 中可信** | `source_type == extracted`（有 `> 来源:` 溯源标注）**且** ≤ 180 天；或 `official-doc` 90〜180 天 | 🟡 |
+| **Tier-3 低可信** | `source_type == user-upload`（用户自己上传）；或任何 > 180 天；或 `source_type == unknown` | 🟠 |
+
+整篇答案的可信度**取最低档**，不得取平均或最高档（证据链的可信度由最弱一环决定）。
+
+#### 8.1.2 强制回答模板
+
+```markdown
+<答案正文：先结论后展开，严格基于证据>
+
+---
+
+### 📚 来源与时效
+
+| 证据 | 类型 | 来源 | 日期 | 年龄 |
+|------|------|------|------|------|
+| `<chunk 文件路径>` | 🟢/🟡/🟠 <中文类型> | `<source 字段>` | YYYY-MM-DD | N 天 |
+| ... | ... | ... | ... | ... |
+
+**可信度**：🟢/🟡/🟠 <整篇档位，取最低> — <一句话说明，例："基于官方文档，最新证据 12 天内"；"基于社区提炼资料，最早证据 173 天前"；"用户本地上传，可信度由您自行判断"> 
+
+<可选：若证据年龄 > 90 天，加以下一行>
+**⚠️ 时效性提示**：本答案最早证据距今 <N> 天，若关注最新版本请刷新。
+
+<可选：若需要刷新或补证据，加以下一行>
+💡 **获取更新证据**：请我"补抓 <主题> 最新官方文档"，或运行 `python bin/milvus-cli.py stats` 查看当前库状态。
+```
+
+#### 8.1.3 硬约束
+
+1. **证据表必填**：即使只有 1 条证据也必须出现证据表。不得省略。
+2. **可信度档位不得虚高**：缺字段（`source_type=unknown` / 无 `fetched_at` 且 `doc_id` 无日期）一律按 Tier-3 处理，不得默认为 Tier-1。
+3. **年龄计算基准**：优先用 chunk frontmatter 的 `fetched_at`（ISO 日期）；缺失时退化到 `doc_id` 末尾的 `-YYYY-MM-DD`；再缺失时标"未知"并按 Tier-3 处理。
+4. **> 90 天必须告警**：任何证据年龄超过 90 天就必须出现 `⚠️ 时效性提示`，不得忽略。
+5. **> 180 天建议刷新**：任何证据年龄超过 180 天时，`💡 获取更新证据` 必须出现，并明确推荐调用 get-info-agent 补抓（如果 Playwright 可用）。
+6. **user-upload 不自动降档**：`source_type == user-upload` 恒定为 Tier-3——但**不是**因为质量差，而是因为可信度取决于用户自己的资料质量，系统无法仲裁。说明时要礼貌表述（"可信度由您自行判断"），不要暗示这是差证据。
+
+#### 8.2 降级模式（基础设施不可用且本地证据不足）
+
+触发条件（任一成立）：
+
+1. 步骤 7 已进入降级分支（`degraded_reason` 非空），且本地证据不足以独立回答。
+2. Milvus 不可用且 Grep 结果稀疏，get-info 也無法触发。
+
+**降级答案格式**（必须使用）：
+
+```markdown
+> ⚠️ **降级回答** ｜ 缺失基础设施：<Milvus / Playwright / 两者>  
+> 本答案主要基于 Claude 训练数据<可选补充：+ N 条本地文件系统证据>，未经过本地知识库或最新网页证据核验。
+
+<答案正文>
+
+---
+
+💡 **恢复建议**：<针对 infra_status 给出具体恢复命令，例如启动 Milvus / 安装 Playwright>。恢复后重新提问以获得可核验的答案。
+```
+
+**降级模式硬约束**：
+
+1. 降级模式下，答案不得给出以下内容（训练数据可能已过时或不精确）：
+   - 具体版本号 / 发布日期 / API 参数默认值
+   - 完整的且声称可直接运行的代码片段（基于未核验的 API）
+   - 官方文档的具体 URL（Claude 容易编造过期或错误的文档链接）
+2. 擅长回答的是概念性、原理性、方法论问题；不擅长的是实时事实和具体配置。对后者应明确说“降级模式无法给出可靠结果，请恢复基础设施后重新提问”。
+3. 如果有少量本地证据，上面的 `+ N 条本地文件系统证据` 字段应填真实数量，并在答案正文中显示引用该证据（阻止 LLM 忽略真实命中只用训练数据）。
 
 ### 步骤9: 委托 Organize Agent 固化本轮答案
 
@@ -321,13 +479,15 @@ Milvus 检索要求：
 3. 如果触发了 Get-Info，说明新增资料来源。
 4. 如果存在限制，明确写出限制。
 
-## 7. 失败策略
+## 7. 失败策略（degrade-first）
 
-遵守 fail-fast：
+核心原则：任何基础设施层错误都必须 **先尝试降级**，再考虑向用户返回错误。仅业务级错误（问题无法理解、用户明确要求某个不存在的文档）才直接告知。
 
-1. 如果检索命令失败，直接暴露失败原因，不要假装已经检索完成。
-2. 如果 Milvus 不可用，明确说明当前只能依赖文件系统证据。
-3. 如果本地与新抓取资料冲突，必须显式指出，不要静默取舍。
+1. **检索命令失败**：对 `milvus-cli.py multi-query-search` 非零退出，先更新 `infra_status.milvus_available = false`，继续走文件系统证据，进入步骤 8.1 正常模式，不要立刻报错。
+2. **Milvus 不可用**：跳过步骤 4，只用文件系统证据；如果证据不足 → 试触发 get-info；如 get-info 也不可用 → 进入降级模式回答（步骤 8.2）。绝不能直接向用户报 "Milvus 不可用" 而不给答案。
+3. **get-info-agent 异常 / 超时**：仅记录 `degraded_reason` 进入步骤 8.2，不向用户暴露 stack trace。
+4. **本地与新抓取资料冲突**（业务级）：必须显式指出，不要静默取舍。
+5. **用户要求的某个具体文件不在知识库里**（业务级）：直接告知用户找不到该文档，提醒其使用 upload-agent 入库。
 
 ## 8. 与其他组件的协作
 

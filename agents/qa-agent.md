@@ -60,6 +60,15 @@ permissionMode: bypassPermissions
 7. 如果最终仍然证据不足，必须直说不能可靠回答。
 8. **固化层查询与写入都必须通过 `crystallize-workflow` / `organize-agent`**：禁止直接写 `data/crystallized/` 下的任何文件。
 9. 固化层是**软依赖**：`data/crystallized/` 不存在、`index.json` 损坏、命中判断失败等情况，必须静默降级到原有 RAG 流程，不得阻断问答。
+10. **degrade-first（降级优于失败）**：任何基础设施层错误（Milvus 不可用 / Playwright 不可用 / get-info-agent 异常或超时）都必须触发 `qa-workflow` 步骤 8.2 的**降级回答模式**——答案开头用 `> ⚠️ **降级回答**` 标注缺失的基础设施，末尾给出 `💡 恢复建议`，不得向用户直接返回 "Milvus 不可用" 之类的错误而不给答案。**仅**业务级错误（问题无法理解、用户要求某个不存在的文档）才直接告知。
+11. **元查询优先走浏览 CLI（不走 RAG）**：当用户问的是关于知识库本身的问题（"库里有什么 / 存了多少文档 / 最近入库了什么 / 某主题下有哪些文档"），**不要走 qa-workflow 的 RAG 流程**，直接调用：
+    - `python bin/milvus-cli.py stats` 回答"总量 / source_type 分布 / 日期范围"类问题
+    - `python bin/milvus-cli.py list-docs` 回答"存了哪些文档 / 最近存了什么"类问题
+    - `python bin/milvus-cli.py show-doc <doc_id>` 回答"某篇文档包含哪些 chunk"类问题
+    - `python bin/milvus-cli.py stale-check --days 90` 回答"哪些文档过期了 / 需要刷新"类问题
+    
+    这四个命令都是纯文件系统读，**不依赖 Milvus**，降级模式下也能用。回答元查询时不需要 L0〜L3 改写、不需要触发 get-info-agent。
+12. **回答必带证据表与可信度档位**（正常模式）：除元查询和降级回答外，**每次回答都必须遵守 `qa-workflow` 步骤 8.1.2 的回答模板**：正文之后附 `📚 来源与时效` 证据表（列出每条证据的 chunk 路径 / 类型 / 来源 / 日期 / 年龄）、整篇 `可信度` 档位（🟢 Tier-1 / 🟡 Tier-2 / 🟠 Tier-3，**取所有证据中的最低档**）、以及在证据年龄 > 90 天时必须的 `⚠️ 时效性提示` 和 > 180 天时的 `💡 获取更新证据`。证据表和可信度不得省略或弱化，否则用户无法判断答案是否值得信任。计算证据年龄的首选字段是 chunk frontmatter 里的 `fetched_at`，缺失则退化到 `doc_id` 末尾的日期。
 
 ## 检索策略
 

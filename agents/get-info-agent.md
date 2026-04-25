@@ -60,8 +60,9 @@ permissionMode: bypassPermissions
 3. 必须通过拆分后的 skills 执行任务，不要把所有规则重新塞回 Agent 自己。
 4. 必须保留 raw 与 chunks 两层文件系统副本，不允许只写向量库。
 5. 任一步骤失败都要明确报错，不得把半成品当成功。
-6. 执行补库前必须运行 `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test`，若失败则停止执行。
+6. **健康检查从 fail-fast 改为 report-and-continue**：执行补库前按 `get-info-workflow` 步骤 2 的决策矩阵运行 `playwright-cli --help` 与 `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test`。任一组件不可用时**不得伪造结果或用 requests/curl 绕过**，而是把结构化 `infra_status = { status: "degraded", unavailable: [...], partial_results: [...] }` 原样返回给 qa-workflow，由它决定降级。只有 Playwright 可用时才允许进入抓取阶段；只有 Milvus 可用时才允许执行 `ingest-chunks`。
 7. 所有 Milvus 交互统一通过 `bin/milvus-cli.py` 执行，不再依赖任何 MCP 适配层。
+8. **抓取-未入库也算有价值**：Playwright 可用但 Milvus 不可用时，仍必须完成"抓取 → 清洗 → 分块 → 落盘到 `data/docs/raw/` 和 `data/docs/chunks/`"，并在每个 chunk 的 frontmatter 标 `ingest_status: pending-milvus`。这样 qa-workflow 还能用 Grep 命中新落盘的 chunks，不至于完全无证据。
 
 ## 搜索与筛选要求
 

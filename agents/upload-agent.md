@@ -1,6 +1,6 @@
 ---
 name: upload-agent
-description: 当用户明确要求"上传/导入/添加本地文档到知识库"时触发。Agent 只负责调度 upload-ingest workflow，把用户本地文档（PDF/Word/LaTeX/TXT/MD/PPT/Excel/图片）转成 Markdown 并按既有 knowledge-persistence 管道入库。与 get-info-agent 平行，完全不经过外部补库链路。**【硬约束：禁止并行】** 本 Agent 依赖 MinerU（单文件峰值 ~14 GB VRAM，16 GB 显卡同一时刻只能跑一个）。无论用户一次提交多少文件、多少目录，都必须用**单次** upload-agent 调用批量处理（文件清单一次性传入），由 Agent 内部顺序执行。**严禁根会话把 N 个文件拆成 N 个并行 upload-agent 任务**——这会让 N 个 MinerU 抢显存直接 OOM 崩溃。
+description: 当用户明确要求"上传/导入/添加本地文档到知识库"时触发。Agent 只负责调度 upload-ingest workflow，把用户本地文件（PDF/Word/LaTeX/TXT/MD/PPT/Excel/图片/源码/配置文件）转成 Markdown 并按既有 knowledge-persistence 管道入库。与 get-info-agent 平行，完全不经过外部补库链路。**【硬约束：禁止并行】** 本 Agent 依赖 MinerU（单文件峰值 ~14 GB VRAM，16 GB 显卡同一时刻只能跑一个）。无论用户一次提交多少文件、多少目录，都必须用**单次** upload-agent 调用批量处理（文件清单一次性传入），由 Agent 内部顺序执行。**严禁根会话把 N 个文件拆成 N 个并行 upload-agent 任务**——这会让 N 个 MinerU 抢显存直接 OOM 崩溃。
 model: sonnet
 tools: Agent, Read, Grep, Glob, Bash, Write, Edit, TodoList
 skills:
@@ -55,16 +55,26 @@ permissionMode: bypassPermissions
 
 ## 支持的输入格式
 
-| 扩展名 | 处理后端 |
-|--------|---------|
-| `.pdf` | MinerU（自动检测扫描件启用 OCR） |
-| `.docx` / `.pptx` / `.xlsx` | MinerU native |
-| `.png` / `.jpg` / `.jpeg` | MinerU OCR |
-| `.tex` | pandoc |
-| `.txt` | 直接读取 |
-| `.md` / `.markdown` | 直接读取（剥除原 frontmatter 以免冲突） |
+| 扩展名 | 处理后端 | backend |
+|--------|---------|---------|
+| `.pdf` | MinerU（自动检测扫描件启用 OCR） | `mineru` |
+| `.docx` / `.pptx` / `.xlsx` | MinerU native | `mineru` |
+| `.png` / `.jpg` / `.jpeg` | MinerU OCR | `mineru` |
+| `.tex` | pandoc | `pandoc` |
+| `.txt` | 直接读取 | `plain` |
+| `.md` / `.markdown` | 直接读取（剥除原 frontmatter 以免冲突） | `markdown` |
+| 源码：`.py` / `.pyi` / `.ts` / `.tsx` / `.js` / `.jsx` / `.mjs` / `.cjs` / `.go` / `.rs` / `.java` / `.kt` / `.kts` / `.scala` / `.swift` / `.c` / `.h` / `.cpp` / `.cc` / `.cxx` / `.hpp` / `.hh` / `.cs` / `.rb` / `.php` / `.lua` / `.dart` / `.sh` / `.bash` / `.zsh` / `.ps1` / `.sql` / `.r` / `.jl` / `.ex` / `.exs` / `.erl` / `.hs` / `.ml` / `.vue` / `.svelte` / `.gradle` / `.groovy` | 直读，用按扩展名映射的语言标识包装成 fenced code block | `code` |
+| 配置 / 标记：`.toml` / `.yaml` / `.yml` / `.json` / `.jsonc` / `.xml` / `.html` / `.htm` / `.css` / `.scss` / `.ini` / `.cfg` / `.conf` / `.env` / `.dockerfile` / `.mk` | 同上（包装成 fenced code block保留语法高亮） | `code` |
 
-**不支持**的格式（遇到需明确告知用户）：`.doc`（请另存为 `.docx`）、`.rtf`、`.epub`、`.html`（建议走 get-info）、`.ppt` / `.xls`（请另存为 `.pptx` / `.xlsx`）等。
+**权威列表**以 `bin/doc-converter.py` 中的 `SUPPORTED_EXTS` / `_CODE_EXTS` / `detect_backend()` 为准。
+
+**仍不支持**的格式（遇到需明确告知用户）：`.doc`（请另存为 `.docx`）、`.rtf`、`.epub`、`.ppt` / `.xls`（请另存为 `.pptx` / `.xlsx`）等。
+
+**源码/配置文件的处理细节**：
+
+1. 内容被包装为 Markdown fenced code block（指定语言标识符），并在首行写入 `# 源码：<文件名>` 标题，确保 chunk 被切分后仍可溯源。
+2. 这意味着 chunk 在渲染器中能正确高亮，LLM 分块/合成 QA 时也能识别代码结构。
+3. 代码文件同样遵循 5000 字符分块阈值（≤ 5000 整文件一块；> 5000 由 knowledge-persistence 按函数/类/逻辑块语义边界切分，不强制按行数）。
 
 ## 触发 Get-Info Agent 的条件（反例）
 

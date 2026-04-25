@@ -41,11 +41,83 @@ _PANDOC_EXTS = {".tex"}
 _PLAIN_EXTS = {".txt"}
 _MARKDOWN_EXTS = {".md", ".markdown"}
 
-SUPPORTED_EXTS = _MINERU_EXTS | _PANDOC_EXTS | _PLAIN_EXTS | _MARKDOWN_EXTS
+# Source code files. Key is the lowercase extension, value is the Markdown
+# fenced-code-block language identifier. Code files are wrapped in a fenced
+# block so downstream chunking, synthetic-QA generation, and rendering all
+# keep the code intact and language-aware.
+_CODE_EXTS: dict[str, str] = {
+    ".py": "python",
+    ".pyi": "python",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".js": "javascript",
+    ".jsx": "jsx",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".scala": "scala",
+    ".swift": "swift",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".cs": "csharp",
+    ".rb": "ruby",
+    ".php": "php",
+    ".lua": "lua",
+    ".dart": "dart",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".ps1": "powershell",
+    ".sql": "sql",
+    ".r": "r",
+    ".jl": "julia",
+    ".ex": "elixir",
+    ".exs": "elixir",
+    ".erl": "erlang",
+    ".hs": "haskell",
+    ".ml": "ocaml",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".json": "json",
+    ".jsonc": "json",
+    ".xml": "xml",
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css",
+    ".scss": "scss",
+    ".vue": "vue",
+    ".svelte": "svelte",
+    ".ini": "ini",
+    ".cfg": "ini",
+    ".conf": "ini",
+    ".env": "dotenv",
+    ".dockerfile": "dockerfile",
+    ".mk": "makefile",
+    ".gradle": "groovy",
+    ".groovy": "groovy",
+}
+
+SUPPORTED_EXTS = (
+    _MINERU_EXTS
+    | _PANDOC_EXTS
+    | _PLAIN_EXTS
+    | _MARKDOWN_EXTS
+    | set(_CODE_EXTS.keys())
+)
 
 
 def detect_backend(path: Path) -> str:
-    """Return one of: ``mineru`` / ``pandoc`` / ``plain`` / ``markdown``."""
+    """Return one of: ``mineru`` / ``pandoc`` / ``plain`` / ``markdown`` / ``code``."""
     ext = path.suffix.lower()
     if ext in _MINERU_EXTS:
         return "mineru"
@@ -55,9 +127,20 @@ def detect_backend(path: Path) -> str:
         return "plain"
     if ext in _MARKDOWN_EXTS:
         return "markdown"
+    if ext in _CODE_EXTS:
+        return "code"
     raise ValueError(
         f"不支持的文件格式: {ext}。支持列表: {sorted(SUPPORTED_EXTS)}"
     )
+
+
+def _code_language_for(path: Path) -> str:
+    """Return the Markdown fenced-code-block language tag for a code file.
+
+    Unknown extensions fall back to an empty string so the fenced block still
+    renders without syntax highlighting.
+    """
+    return _CODE_EXTS.get(path.suffix.lower(), "")
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +443,23 @@ def convert_plain_text(input_path: Path) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def convert_code(input_path: Path) -> str:
+    """Read a source-code file and wrap it in a fenced Markdown code block.
+
+    The language identifier is inferred from the file extension. A short header
+    line records the original file name so downstream chunks retain provenance
+    even when split across multiple chunks.
+    """
+    raw = input_path.read_text(encoding="utf-8-sig", errors="replace")
+    raw = raw.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    language = _code_language_for(input_path)
+    # If the code itself contains ``` we use four backticks for the outer fence
+    # so the body is not prematurely terminated.
+    outer_fence = "````" if "```" in raw else "```"
+    header = f"# 源码：{input_path.name}\n\n"
+    return f"{header}{outer_fence}{language}\n{raw}\n{outer_fence}\n"
+
+
 def strip_existing_frontmatter(text: str) -> str:
     """Remove an existing YAML frontmatter block if present.
 
@@ -435,6 +535,8 @@ def convert_one(
         body = convert_plain_text(input_path)
     elif backend == "markdown":
         body = convert_markdown(input_path)
+    elif backend == "code":
+        body = convert_code(input_path)
     else:  # pragma: no cover - detect_backend already raises
         raise ValueError(f"未知 backend: {backend}")
 

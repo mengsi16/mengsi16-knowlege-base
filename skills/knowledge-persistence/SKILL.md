@@ -37,10 +37,26 @@ raw 文档必须：
 
 1. 保存到 `data/docs/raw/`。
 2. 使用 UTF-8 编码。
-3. 带 YAML metadata。
+3. 带 YAML metadata（含 `content_sha256` 字段，见 2.1）。
 4. 保留完整正文结构。
 5. `doc_id` 必须带抓取日期，格式：`<topic-slug>-YYYY-MM-DD`。
 6. raw 文件名必须与 `doc_id` 一致。
+
+### 2.1 content_sha256 去重字段（P2-1）
+
+每个 raw 文档的 frontmatter 必须包含 `content_sha256` 字段，值是正文（不含 frontmatter）的 SHA-256 十六进制摘要，用于入库前去重与事后审计：
+
+1. **哈希范围**：raw Markdown 的 body（去除两个 `---` 围栏之间的 frontmatter 后剩下的全部正文）。
+2. **计算时机**：在 frontmatter 组装完成、写入 `data/docs/raw/` 之前；入库前调用 `python bin/milvus-cli.py hash-lookup <sha256>` 查重。
+3. **去重动作**：
+   - `status: "hit"` → 跳过本次入库，复用已有 doc_id，并在返回里说明 `skipped_duplicate`。
+   - `status: "miss"` → 继续入库，把 `content_sha256` 写入 frontmatter。
+4. **边界**：
+   - 换行统一按 LF 计算（`\r\n` / `\r` → `\n`），避免跨平台签名漂移。
+   - **hash 前 `strip("\n")`** 去除首尾换行；frontmatter-body 分隔空行和文件末尾换行不计入内容。
+   - 只 hash body，不 hash frontmatter——`fetched_at` 等字段在同内容不同时抓取时会变，全文 hash 会失去去重意义。
+5. **历史数据迁移**：对不带此字段的旧 raw，运维可用 `python bin/milvus-cli.py backfill-hashes --dry-run` 先预览、再真跑补齐。
+6. **定期体检**：`python bin/milvus-cli.py find-duplicates` 列出所有 hash 冲突组与 `hash_mismatch`（declared ≠ actual）情况。
 
 ## 3. 分块规则（带 5000 字符硬阈值）
 
@@ -63,9 +79,20 @@ raw 文档必须：
 5. 同一 chunk 必须聚焦单一主题。
 6. 允许极短的轻度重叠（≤ 200 字符）以保留上下文，但禁止重复污染。
 
+### 3.2.1 源码/配置文件的专用切分规则
+
+当 raw Markdown 由 `doc-converter` 的 `code` backend 生成（识别特征：正文以 `# 源码：<文件名>` 开头且主体是单个 fenced code block），切分规则与普通文档不同：
+
+1. **优先按语义单元切分**：函数定义 / 类定义 / module 顶层 block / 测试用例 / 逻辑相关的一组语句。不要按字符数均匀切分。
+2. **保留 fenced block 结构**：每一个 chunk 都必须是自包含的 fenced code block。切出新 chunk 时要重开 code fence，格式为 ```` ```<language>\n...\n``` ````（语言标识从原 raw 的 fence 里复制）。
+3. **chunk 开头保留溯源头部**：每个源码 chunk 的正文开头加一行 `# 源码：<文件名>（片段 N/M）`，让 chunk 独立被 Grep/LLM 读到时也能知道来自哪个文件的第几段。
+4. **import/use/package 语句就近保留**：如果被切分到的函数依赖文件顶部的 import，应当在 chunk 的开头复述一次相关 import（允许小段重复）。
+5. **问题合成（doc2query）应用代码视角**：问题示例——"这个函数的作用是什么？"、"如何调用 XxxClass？"、"该配置项的默认值是什么？"——参见 5.2 的通用约束。
+6. 如果代码文件正文 ≤ 5000 字符，按 3.1 第 1 条整篇作一个 chunk，不要切分。
+
 ### 3.3 退化规则（极少触发）
 
-只有当一个语义块本身 > 5000 字符且**内部完全没有可用的安全切点**（典型为单一超长代码块）时，才允许按 5000 字符硬切；硬切前必须在 chunk 摘要中标记 `truncated: true`，且优先尝试拆出代码块独立成块。
+只有当一个语义块本身 > 5000 字符且**内部完全没有可用的安全切点**（典型为单一超长代码块或极端连续文本）时，才允许按 5000 字符硬切；硬切前必须在 chunk 摘要中标记 `truncated: true`，且优先尝试拆出代码块独立成块。对源码文件而言，超长的单个函数/类也属于这种情况——仍然优先按 3.2.1 找函数内逻辑段边界，实在不行才硬切。
 
 ## 4. 分块文档保存
 
@@ -89,6 +116,7 @@ section_path: Claude Code / Subagent / 创建
 source: anthropic-docs
 source_type: official-doc
 url: https://docs.anthropic.com/...
+fetched_at: 2026-04-18
 summary: 简述本块讲了什么，便于 Grep 与排序
 keywords: claude-code, subagent, 创建, frontmatter
 questions: ["如何在 Claude Code 中创建 subagent?", "subagent 的 YAML frontmatter 必填字段是什么?", "subagent 与 plugin 的关系?"]
@@ -96,6 +124,8 @@ questions: ["如何在 Claude Code 中创建 subagent?", "subagent 的 YAML fron
 
 # 正文 Markdown ...
 ```
+
+`fetched_at` 必须是 ISO 日期（`YYYY-MM-DD`），记录**文档内容最后一次从源站抓取的日期**（不是入库日期，也不是文档本身的发布日期，尽管在初次入库时三者通常重合）。qa-workflow 的时效性分级依赖此字段；缺失时会退化到 doc_id 末尾的日期，但日期精度会丢失。
 
 `questions` 字段是 **JSON inline 数组**（每个元素一个完整问题字符串）。这是 `bin/milvus-cli.py` 当前唯一支持的解析格式，避免引入 PyYAML 依赖。
 
@@ -112,6 +142,7 @@ section_path: Claude Code / Subagent / 社区实践
 source: community-extraction
 source_type: extracted
 urls: ["https://blog.example.com/post-1", "https://forum.example.com/thread-2"]
+fetched_at: 2026-04-18
 summary: 从社区博客和问答帖中提炼的 Subagent 实践要点
 keywords: claude-code, subagent, 社区实践, 经验总结
 questions: ["社区中常见的 Subagent 配置陷阱有哪些?", "Subagent 与 Tool 的实际使用场景区别是什么?"]
@@ -149,6 +180,7 @@ source: user-upload
 source_type: user-upload
 original_file: data/docs/uploads/my-paper-2026-04-19/my-paper.pdf
 url:
+fetched_at: 2026-04-19
 summary: 简述本块讲了什么，便于 Grep 与排序
 keywords: 深度学习, 模型压缩, 知识蒸馏
 questions: ["知识蒸馏的基本思路是什么?", "学生模型需要多大才足够?", "温度参数如何影响蒸馏效果?"]
@@ -165,6 +197,25 @@ user-upload 类型额外约束：
 4. 不需要 `urls` 数组（那是 extracted 类型专用）。
 5. 不要在正文里手写"> 来源: ..."标注（那是 extracted 类型专用；用户上传的溯源依靠 `original_file` 字段回指归档文件）。
 6. `keywords` 可以在首次入库时留空或由 `upload-agent` 基于正文粗提取；后续可由 `organize-agent` 在固化过程中完善。
+7. `fetched_at` 填用户上传的日期（通常和 `doc_id` 末尾日期一致）。如果用户提供了更精确的原文档日期（例如 PDF 元数据中的 `CreationDate`），应以原文档日期为准。
+
+### frontmatter 必填字段总结
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `doc_id` | ✅ | 文档唯一标识，末尾带 `-YYYY-MM-DD` |
+| `chunk_id` | ✅ | `<doc_id>-<NNN>` |
+| `title` | ✅ | chunk 标题 |
+| `section_path` | ✅ | 章节路径 |
+| `source` | ✅ | 来源标识，例 `anthropic-docs` / `user-upload` |
+| `source_type` | ✅ | `official-doc` / `extracted` / `user-upload` 三选一 |
+| `fetched_at` | ✅ | **新増（P1-4）**：ISO 日期，qa-workflow 时效性分级的主键 |
+| `summary` | ✅ | 一行简述 |
+| `keywords` | ✅ | 逗号分隔关键词 |
+| `questions` | ✅ | JSON inline 数组的合成 QA |
+| `url` | 含 official-doc / extracted 必填 | URL；user-upload 留空 |
+| `urls` | extracted 必填 | URL 数组 |
+| `original_file` | user-upload 必填 | uploads/ 归档路径 |
 
 ## 5. 合成 QA 问题生成（doc2query）
 

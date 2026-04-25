@@ -103,15 +103,31 @@ get-info-agent 在执行本 workflow 前，**必须先调用 `TodoList` 工具**
 3. 抓取目标更适合官方文档、博客、仓库文档还是问答页。
 4. 是否必须优先最新资料。
 
-### 步骤2: 执行前置健康检查
+### 步骤2: 执行前置健康检查（report-and-continue）
 
-执行补库前必须完成：
+执行补库前探测以下依赖，**不再 fail-fast**，改为返回结构化 `infra_status`：
 
-1. `playwright-cli --help` 或 `npx --no-install playwright-cli --help`。
-2. 执行 `python bin/milvus-cli.py inspect-config`，确认 Milvus 配置可解析。
-3. 执行 `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test`。
+1. `playwright-cli --help` 或 `npx --no-install playwright-cli --help` → `playwright_available`。
+2. `python bin/milvus-cli.py inspect-config` → `milvus_config_valid`。
+3. `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test` → `milvus_runtime_available`。
 
-任一检查失败都必须 fail-fast，禁止进入抓取和持久化。
+#### 2.1 决策矩阵
+
+依据探测结果决定本次任务的走向：
+
+| 场景 | 决策 |
+|------|------|
+| 三项全部可用 | 正常继续步骤 3〜10 |
+| `playwright_available=false` | **立即 abort**：没有抓取能力，无法补库。返回 `{ status: "degraded", reason: "playwright unavailable", unavailable: ["playwright"] }` 给 get-info-agent，它再返回给 qa-workflow 由其进入降级回答模式。**禁止伪造抓取结果或用 requests/curl 绕过** |
+| `milvus_*=false` | **部分模式**：Playwright 可用 → 仍可抓取 + 清洗 + 分块 + 落盘到 `data/docs/raw/` 与 `data/docs/chunks/`（本地可 Grep 到），但**跳过 Milvus 入库**，返回 `{ status: "degraded", reason: "milvus unavailable", unavailable: ["milvus"], partial_results: [ { raw_path, chunk_paths } ] }`。qa-workflow 可以直接 Grep 新落盘的 chunks 作为证据 |
+| `playwright_available=false` 且 `milvus_*=false` | 立即 abort，返回 `unavailable: ["playwright","milvus"]`，qa-workflow 走完全降级 |
+
+#### 2.2 硬约束
+
+1. 探测阶段总耗时 ≤ 15 秒；超时一律视为不可用。
+2. 返回给 get-info-agent 的 `infra_status` 必须是结构化对象，不能是自由文本。get-info-agent 的 Todo 列表里必须有"读取并透传 infra_status"一步。
+3. **禁止伪造**：依赖不可用时绝不允许用训练数据伪造抓取结果；正确的处理是上游 qa-workflow 进入降级回答模式，明确告知用户。
+4. `partial_results` 中的每个 chunk 必须在 frontmatter 里标 `ingest_status: pending-milvus`，便于后续批量回补入库。
 
 ### 步骤3: 读取并更新站点优先级上下文
 
@@ -224,13 +240,25 @@ LLM 输出四分类结果：`official-high` / `official-low` / `community` / `di
 
 ### 步骤7: 文档级去重与命名
 
-落盘前必须做文档级判断：
+落盘前必须按以下顺序做文档级判断：
+
+#### 7.1 内容哈希去重（P2-1，硬约束）
+
+在给 `knowledge-persistence` 草稿之前：
+
+1. 按 LF 换行规范化正文（`\r\n` / `\r` → `\n`），计算 body 的 SHA-256。
+2. 调用 `python bin/milvus-cli.py hash-lookup <sha256>`：
+   - `status: "hit"` → **直接跳过本轮补库**。返回 `{skipped: true, reason: "content_identical", existing_doc_ids: [...]}`，交给 get-info-agent 向上汇报。不要伪装成"补库成功"，也不要再写新 raw。
+   - `status: "miss"` → 继续步骤 7.2，并把 `content_sha256` 写入将要写盘的 raw frontmatter。
+3. 若 CLI 报错或返回 `degraded`，退化为仅基于 URL + 标题相似度的去重（7.2），并在报告中注明 `hash_check_degraded: true`。
+
+#### 7.2 软去重（hash miss 后仍要做的结构化判断）
 
 1. 是否已经存在相同 URL 的文档。
 2. 是否已经存在标题高度相似、主题高度相似的文档。
 3. 如果是同一主题的新版本，应该新增新文档并在 metadata 中保留版本或抓取时间，而不是粗暴覆盖。
 
-命名策略（强制）：
+#### 7.3 命名策略（强制）
 
 1. `doc_id` 必须带抓取日期，格式：`<topic-slug>-YYYY-MM-DD`。
 2. raw 文件名必须等于 `doc_id`，即：`data/docs/raw/<doc_id>.md`。

@@ -26,3 +26,8 @@ FlagEmbedding>=1.2
 #    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 #    替换成 CUDA 版 torch（RTX 4060 Ti 每页仅 7 秒，约 45x 提速）。
 mineru[pipeline]>=3.1,<4.0
+
+# -------- 开发与测试（可选）--------
+# smoke test 框架：pytest tests/smoke -q 运行 CLI 级冒烟测试
+# 生产环境不需要，CI / 本地开发前 pip install -e .[dev] 或单独 pip install pytest
+pytest>=8.0

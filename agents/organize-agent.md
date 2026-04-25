@@ -23,9 +23,11 @@ permissionMode: bypassPermissions
 
 **crystallize 模式**：
 1. 读取 index.json 检查是否已有同主题 skill → pending
-2. 生成 skill_id + frontmatter → pending
-3. 写入 <skill_id>.md（答案 + execution_trace + pitfalls） → pending
-4. 更新 index.json → pending
+2. 生成 skill_id + frontmatter + source_chunks / source_urls → pending
+3. **价值评分**（通用性 / 稳定性 / 证据质量 / 成本收益四维度）→ pending
+4. **冷热判定**（<0.3 跳过 / 0.3-0.6 cold / ≥0.6 hot / cost_benefit≥0.8 豁免）→ pending
+5. 写入目标路径的 <skill_id>.md（hot 在 `data/crystallized/`，cold 在 `data/crystallized/cold/`）→ pending
+6. 更新 index.json（含 layer / value_score / value_breakdown / hit_count / last_hit_at / promoted_from_cold_at 新字段）→ pending
 
 **refresh 模式**：
 1. 读取原 skill 提取 execution_trace + pitfalls → pending
@@ -41,9 +43,11 @@ permissionMode: bypassPermissions
 
 **lint 模式**：
 1. 读取 index.json → pending
-2. 扫描 data/crystallized/ 目录 → pending
-3. 清理 rejected / 孤儿 / 超 3× TTL → pending
-4. 写回 index.json → pending
+2. 扫描 data/crystallized/ 和 data/crystallized/cold/ 两层目录 → pending
+3. 清理 rejected → pending
+4. 将活跃层中超过 3× TTL 无命中的降级到 cold（跳过 user_feedback=confirmed）→ pending
+5. 将冷藏层中超过 6× TTL 无命中的彻底删除 → pending
+6. 写回 index.json → pending
 
 ## 核心职责
 
@@ -88,15 +92,44 @@ organize-agent （独立触发）
 
 ## 固化决策规则
 
-接收 qa-agent 的固化请求时，不是每次都要固化。满足以下全部条件才固化：
+接收 qa-agent 的固化请求时，不是每次都要固化。满足以下全部条件才进入固化流程：
 
 1. qa-agent 明确给出了完整答案（非"证据不足"或"无法回答"）。
 2. 答案基于至少 1 条本地证据（`source_chunks` 非空），或本轮触发了 get-info-agent 抓取新证据。
-3. 问题本身是**可复用的**：事实性 / 流程性 / 概念性问题。**不固化**的场景：
-   - 用户个人偏好、临时调试信息、本地环境特定配置。
-   - 一次性问题（"今天日期是什么"）。
-   - 涉及敏感信息（凭证、API key、私人数据）。
+3. **非降级模式的回答**（qa-workflow 步骤 8.2 的降级答案不固化，避免训练数据污染固化层）。
 4. 问题不是对已有 skill 的轻微改写（避免同义 skill 泛滥）——先查 index.json，若主题高度重合应走"更新"而非"新建"。
+5. 不包含敏感信息（凭证、API key、私人数据）。
+
+**满足以上后进入价值评分流程（P1-5）**：
+
+按 crystallize-workflow §3.5.1 的四维度（每维度 `[0.0, 1.0]`）给本次回答打分：
+
+1. **通用性 generality**：问题是否可能被不同用户/不同时间重复问到。
+   - 高分（≥0.8）：概念性问题、框架工具的基本用法、科学/数学定义。
+   - 中分（0.4-0.6）：特定技术栈的配置、一般性的最佳实践。
+   - 低分（<0.3）：个人化问题（"我本地文件里的..."）、一次性调试、响应中含用户个人路径/文件名。
+2. **稳定性 stability**：答案是否依赖时效性强的证据。
+   - 高分（≥0.8）：数学公式、设计哲学、已稳定的 API 的语义。
+   - 中分（0.4-0.6）：正式版功能的配置、稳定文档章节。
+   - 低分（<0.3）：beta / 预览版特性、旬日风格的新闻/版本更新。
+3. **证据质量 evidence_quality**：证据来源可信度。
+   - 高分（≥0.8）：多条官方文档 chunk 交叉验证。
+   - 中分（0.4-0.6）：官方文档但只有17条；提炼资料但有源头标注。
+   - 低分（<0.3）：user-upload 内容；source_type=unknown。
+4. **成本收益 cost_benefit**：本次回答耗费多少成本（越贵越值得固化）。
+   - 高分（≥0.8）：触发了 get-info-agent 且成功抓取 ≥3 个 chunk（**沉没成本豁免**）。
+   - 中分（0.4-0.6）：触发了多次 multi-query-search；包含复杂推理。
+   - 低分（<0.3）：纯文件系统 Grep 命中，几秒返回。
+
+**综合评分**：`value_score = 0.3*generality + 0.3*stability + 0.3*evidence_quality + 0.1*cost_benefit`
+
+**冷热分流**：
+
+1. `value_score < 0.3` → 跳过固化。不写文件、不写 index；返回 `{status: "skipped", skip_reason: "low_value_score"}`。
+2. `0.3 <= value_score < 0.6` 且 **cost_benefit < 0.8** → 写入 cold 层（`data/crystallized/cold/<skill_id>.md`），`layer="cold"`。
+3. `value_score >= 0.6` 或 **cost_benefit >= 0.8**（沉没成本豁免）→ 写入 hot 层，`layer="hot"`。
+
+**打分必须保守**：拿不准的维度给 0.5，不要凭感觉打 0.9。
 
 ## 刷新决策规则
 
@@ -179,11 +212,18 @@ qa-agent 通过 `Agent` tool 调用本 Agent，传入 JSON：
     "get_info_triggered": false,
     "get_info_notes": null
   },
+  "cost_signals": {
+    "triggered_get_info": false,
+    "new_chunks_fetched": 0,
+    "milvus_search_count": 1
+  },
   "pitfalls_observed": [
     "搜索 `sub-agent` 命中 0，改用 `subagent` 成功"
   ]
 }
 ```
+
+`cost_signals` 字段由 qa-agent 基于本轮 qa-workflow 的资源消耗填写，供 organize-agent 打分 cost_benefit 维度。缺失时按保守值 0.3 打分。
 
 ### 刷新请求
 
@@ -220,7 +260,10 @@ qa-agent 通过 `Agent` tool 调用本 Agent，传入 JSON：
   "status": "ok | degraded | failed",
   "skill_id": "... 或 null",
   "revision": 1,
-  "action_taken": "created | updated | refreshed | feedback_applied | linted | skipped",
+  "action_taken": "created_hot | created_cold | updated | refreshed | feedback_applied | linted | skipped",
+  "layer": "hot | cold | null",
+  "value_score": 0.67,
+  "skip_reason": "low_value_score | has_sensitive_info | null",
   "notes": "..."
 }
 ```
