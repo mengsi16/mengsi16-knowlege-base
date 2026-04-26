@@ -82,6 +82,24 @@ def _first_paragraph(markdown: str) -> str:
     return paragraph[:500]
 
 
+DOC2QUERY_INDEX_PATH = Path("data/eval/doc2query-index.json")
+
+
+def _load_doc2query_index() -> dict[str, list[str]]:
+    """Load doc2query-index.json and return {chunk_id: questions} mapping."""
+    if not DOC2QUERY_INDEX_PATH.exists():
+        return {}
+    try:
+        data = json.loads(DOC2QUERY_INDEX_PATH.read_text(encoding="utf-8"))
+        return {
+            cid: entry["questions"]
+            for cid, entry in data.get("entries", {}).items()
+            if "questions" in entry
+        }
+    except (json.JSONDecodeError, KeyError):
+        return {}
+
+
 def _parse_questions_value(raw_value: str) -> list[str]:
     """Parse a frontmatter ``questions`` value.
 
@@ -104,7 +122,9 @@ def _parse_questions_value(raw_value: str) -> list[str]:
     return [str(item).strip() for item in parsed if str(item).strip()]
 
 
-def _parse_markdown_frontmatter(chunk_file: Path) -> dict[str, Any] | None:
+def _parse_markdown_frontmatter(
+    chunk_file: Path, doc2query_index: dict[str, list[str]] | None = None
+) -> dict[str, Any] | None:
     text = chunk_file.read_text(encoding="utf-8")
     if not text.startswith("---"):
         return None
@@ -126,6 +146,7 @@ def _parse_markdown_frontmatter(chunk_file: Path) -> dict[str, Any] | None:
     if not metadata.get("doc_id") or not metadata.get("chunk_id"):
         return None
 
+    chunk_id = metadata.get("chunk_id", "")
     section_path = metadata.get("section_path", "")
     if isinstance(section_path, list):
         section_path = " / ".join(str(item) for item in section_path)
@@ -133,11 +154,16 @@ def _parse_markdown_frontmatter(chunk_file: Path) -> dict[str, Any] | None:
     title = metadata.get("title") or _first_heading(content)
     summary = metadata.get("summary") or _first_paragraph(content)
     keywords = metadata.get("keywords", "")
-    questions = _parse_questions_value(metadata.get("questions", ""))
+
+    # Priority: doc2query-index.json > chunk frontmatter
+    if doc2query_index is not None and chunk_id in doc2query_index:
+        questions = doc2query_index[chunk_id]
+    else:
+        questions = _parse_questions_value(metadata.get("questions", ""))
 
     return {
         "doc_id": metadata.get("doc_id", ""),
-        "chunk_id": metadata.get("chunk_id", ""),
+        "chunk_id": chunk_id,
         "title": title,
         "section_path": section_path,
         "source": metadata.get("source", ""),
@@ -343,11 +369,12 @@ def ensure_collection(
 def ingest_chunks(chunk_files: list[Path], replace_docs: bool = False) -> dict[str, Any]:
     settings = load_runtime_settings()
     runtime = build_embedding_runtime(settings)
+    doc2query_index = _load_doc2query_index()
 
     parsed_rows: list[dict[str, Any]] = []
     skipped_files: list[str] = []
     for chunk_file in chunk_files:
-        parsed = _parse_markdown_frontmatter(chunk_file)
+        parsed = _parse_markdown_frontmatter(chunk_file, doc2query_index=doc2query_index)
         if parsed is None:
             skipped_files.append(str(chunk_file))
             continue

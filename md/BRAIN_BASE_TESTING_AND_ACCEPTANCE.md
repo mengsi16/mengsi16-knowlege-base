@@ -86,7 +86,7 @@ python -m pytest tests/smoke -q
 当前结果：
 
 ```text
-47 passed in 26.31s
+55 passed in 31.39s
 ```
 
 这说明：
@@ -94,6 +94,7 @@ python -m pytest tests/smoke -q
 - 离线 smoke test 已通过
 - 当前 CLI 改动没有明显回归
 - P2-1 内容哈希去重相关测试通过
+- P2-3 召回评估 CLI 相关测试通过
 
 但这还只是“代码层正确”，**还不等于产品层可用**。
 
@@ -110,7 +111,7 @@ python -m pytest tests/smoke -q
 预期：
 
 ```text
-47 passed in xx.xx s
+55 passed in xx.xx s
 ```
 
 ### 2. 只测内容哈希去重
@@ -143,6 +144,24 @@ python bin/crystallize-cli.py stats
 python bin/crystallize-cli.py list-hot
 python bin/crystallize-cli.py list-cold
 ```
+
+### 6. 构建并运行召回评估
+
+```powershell
+python bin/eval-recall.py build-queries --chunks-dir data/docs/chunks --output data/eval/queries.json
+python bin/eval-recall.py run --queries data/eval/queries.json --mode embedding --top-k 10
+python bin/eval-recall.py run --queries data/eval/queries.json --mode full --top-k 10
+python bin/eval-recall.py record-feedback --question "..." --rating 5 --type positive --chunk-ids "[\"chunk-id\"]" --doc-ids "[\"doc-id\"]"
+python bin/eval-recall.py feedback-to-queries --output data/eval/queries-real.json
+```
+
+当前基线：
+
+- `queries.json`：81 条合成测试问题
+- embedding-only：Recall@1/3/5 = 100%
+- full（grep + embedding）：Recall@1/3/5 = 100%
+- feedback：可写入 `data/eval/feedback.db`，并将高评分 positive/partial 反馈转成 `origin=real` 评估问题
+- 注意：该结果主要说明 doc2query question 行能正确召回父 chunk，偏乐观；后续应加入真实用户 query 与 hard negative。
 
 ---
 

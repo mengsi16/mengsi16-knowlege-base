@@ -58,27 +58,56 @@ This project adopts the [Karpathy LLM Wiki](https://gist.github.com/karpathy/442
 | **Schema Layer** (`agents/` + `skills/`) | User + Author | Rule files controlling system behavior |
 
 ```mermaid
-flowchart LR
-    U[User Question] --> QA[qa-agent]
-    QA --> CRY{Self-Evolving Crystallized Layer<br/>crystallize-workflow<br/>Hit Detection + Freshness}
-    CRY -->|hit_fresh| CRYANS[📦 Direct Return<br/>Solidified Answer]
-    CRY -->|hit_stale| ORG[organize-agent<br/>Carrying execution_trace<br/>+ pitfalls Refresh]
-    CRY -->|miss| RAG[L0-L3 fan-out<br/>+ multi-query-search]
-    ORG --> GI
-    RAG -->|Sufficient Evidence| ANS[Direct Answer<br/>chunk/raw/URL Citation]
-    RAG -->|Insufficient Evidence| GI[get-info-agent]
-    GI --> CRAWL[Playwright-cli<br/>Search + Scrape + Clean]
-    CRAWL --> CLS{Source Classification<br/>Whitelist + LLM}
-    CLS -->|official-doc| STORE[5000 Char Threshold Chunking<br/>+ Synthetic QA doc2query]
-    CLS -->|community| EXT[LLM Extracted Knowledge Points<br/>+ Source Annotation]
-    CLS -->|discard| DROP[Discard]
-    EXT --> STORE
-    STORE --> FS[raw/chunks Dual Persistence]
-    STORE --> MV[Milvus hybrid<br/>dense + sparse]
-    MV --> UP[update-priority<br/>keywords.db + priority.json<br/>+ official_domains Backfill]
-    UP --> RAG
-    ANS --> ORG2[organize-agent<br/>Solidify This Round's Answer<br/>→ data/crystallized/]
-    ORG2 --> CRY
+sequenceDiagram
+    participant U as "User"
+    participant QA as "qa-agent"
+    participant CRY as "Crystallized Layer"
+    participant RAG as "RAG"
+    participant GI as "get-info-agent"
+    participant PW as "Playwright-cli"
+    participant CLS as "Source Classification"
+    participant KP as "knowledge-persistence"
+    participant MV as "Milvus"
+    participant UP as "update-priority"
+    participant ORG as "organize-agent"
+    participant SH as "self-heal-workflow"
+
+    U->>QA: Question
+    QA->>CRY: Hit Detection + Freshness
+    alt hit_fresh
+        CRY-->>U: 📦 Direct return solidified answer
+    else hit_stale
+        CRY->>ORG: Carry execution_trace + pitfalls for refresh
+        ORG->>GI: Dispatch supplementation
+    else miss
+        QA->>RAG: L0-L3 fan-out + multi-query-search
+        alt Sufficient evidence
+            RAG-->>QA: Return evidence
+        else Insufficient evidence
+            RAG->>GI: Trigger supplementation
+        end
+    end
+    GI->>PW: Search + Scrape + Clean
+    PW->>CLS: Source classification
+    alt official-doc
+        CLS->>KP: 5000 char threshold chunking + synthetic QA
+    else community
+        CLS->>KP: LLM extracted knowledge points + source annotation
+    else discard
+        Note over CLS: Discard
+    end
+    KP->>KP: raw/chunks dual persistence
+    KP->>MV: hybrid dense + sparse
+    MV->>UP: keywords.db + priority.json + official_domains backfill
+    UP->>RAG: Re-retrieve
+    QA-->>U: Answer + chunk/raw/URL citation
+    par Solidify
+        QA->>ORG: Solidify this round's answer
+        ORG->>CRY: Write to data/crystallized/
+    and Self-heal
+        QA->>SH: Recall trace fire-and-forget
+        SH->>MV: doc2query-index.json add questions
+    end
 ```
 
 ---
@@ -91,11 +120,14 @@ flowchart LR
 - **Upload Agent**: Entry point for user-local document ingestion (parallel to Get-Info Agent). Accepts PDF / Word / PPT / Excel / LaTeX / TXT / MD / images, uniformly converts to Markdown via **MinerU 3.x + pandoc**, then reuses the downstream `knowledge-persistence` pipeline for identical chunking and ingestion.
 - **Playwright-cli**: Directly uses official `playwright-cli` command following official repository installation and invocation recommendations.
 - **Milvus hybrid index (default bge-m3)**: Dense + sparse dual recall, supporting chunk rows + synthetic question rows (doc2query).
+- **Question self-healing**: After answering, `qa-agent` records a recall trace. On low-score hits, no hits, or negative user feedback, an independent background `claude -p` process triggers `self-heal-workflow` to add missing-dimension questions and re-ingest affected documents.
+- **Authoritative doc2query index**: `data/eval/doc2query-index.json` is the authoritative source for questions. `ingest-chunks` reads it first and uses chunk frontmatter as fallback.
+- **Recall evaluation and source arbitration**: `eval-recall.py` supports recall@K, 6-dimension question coverage checks, and feedback capture; `source-priority.py` annotates chunks with `source_priority` and detects potential source conflicts.
 - **5000 Character Chunking Threshold**: Short documents (≤ 5000 chars) remain as single chunks; long documents are split at Markdown semantic boundaries.
 - **multi-query-search**: Converts multiple query variants into CLI calls, automatically concurrent retrieval, RRF merging, and deduplication by chunk_id.
 - **Skill Workflows**: Production-grade workflow constraints for query rewriting, evidence judgment, scraping process, persistence process, and crystallized layer hit/refresh flows.
 - **Dynamic Site Priority**: Updates `priority.json` and `keywords.db` based on actual hit results.
-- **Non-Official Source Content Extraction**: Blogs, tutorials, Q&A posts are not stored whole; LLM extracts useful knowledge points and reorganizes into documents with `> Source: <url>` traceability annotations. Full traceability preserved in file system (frontmatter `urls` array + inline annotations), searchable via grep without additional database.
+- **Non-Official Source Content Extraction**: Blogs, tutorials, Q&A posts are not stored whole; LLM extracts useful knowledge points and reorganizes them into documents with `> Source: <url>` traceability annotations. Each URL is stored as an independent document (frontmatter `url` single string + inline annotations), searchable via grep without additional database.
 - **Official Domain Self-Learning Whitelist**: `priority.json.official_domains` serves as classification fast lane; new domains LLM-high-confidence-classified as official are idempotently backfilled by `update-priority`, becoming more accurate over time.
 
 ---
@@ -122,33 +154,53 @@ flowchart LR
 6. Judge evidence sufficiency and freshness.
 7. Only trigger `get-info-agent` when local evidence is insufficient and external knowledge is clearly needed.
 8. Answer user based on evidence.
-9. **Step 9: Delegate to `organize-agent` to solidify this round's answer** — when solidification conditions are met, asynchronously write to `data/crystallized/` for shortcut return on similar future questions.
+9. **Step 9: Recall trace + self-heal trigger check** — record `question / chunk_ids / doc_ids / retrieval_scores / answer_summary / session_id`; on low-score or negative feedback, write a signal file under `data/eval/self-heal-pending/` and trigger `self-heal-workflow` in fire-and-forget mode.
+10. **Step 10: Delegate to `organize-agent` to solidify this round's answer** — when solidification conditions are met, asynchronously write to `data/crystallized/` for shortcut return on similar future questions.
 
 ```mermaid
-flowchart TD
-    IN[User Question] --> CRY{Self-Evolving Crystallized Layer<br/>Hit Detection}
-    CRY -->|hit_fresh| CRYANS[📦 Direct Return<br/>Solidified Answer]
-    CRY -->|hit_stale| REFR[organize-agent<br/>Carrying execution_trace<br/>+ pitfalls Refresh]
-    CRY -->|miss| FAN[L0-L3 fan-out Rewriting]
-    REFR --> FAN
-    FAN --> L0[L0 Original]
-    FAN --> L1[L1 Term Normalization]
-    FAN --> L2[L2 Intent Enhancement]
-    FAN --> L3[L3 HyDE Hypothetical Answer]
-    L0 --> MQS
-    L1 --> MQS
-    L2 --> MQS
-    L3 --> MQS
-    MQS[multi-query-search<br/>Concurrent Retrieval of All Variants] --> CR[Chunk Rows]
-    MQS --> QR[Question Rows kind=question]
-    CR --> RRF[RRF Merge<br/>Deduplicate by chunk_id<br/>Questions Fold Back to Parent Chunk]
-    QR --> RRF
-    RRF --> MERGE[Merge File System Hits<br/>chunks/ + raw/]
-    MERGE --> JUDGE{Sufficient Evidence?}
-    JUDGE -->|Yes| ANSWER[Answer + chunk/raw/URL Citation]
-    JUDGE -->|No| TRIG[Trigger get-info-agent]
-    ANSWER --> CRYW[organize-agent<br/>Solidify This Round's Answer]
-    CRYW --> CRYDB[(data/crystallized/)]
+sequenceDiagram
+    participant U as "User"
+    participant QA as "qa-agent"
+    participant CRY as "Crystallized Layer"
+    participant MQS as "multi-query-search"
+    participant FS as "File System"
+    participant GI as "get-info-agent"
+    participant ORG as "organize-agent"
+    participant SH as "self-heal-workflow"
+
+    U->>QA: Question
+    QA->>CRY: Hit detection
+    alt hit_fresh
+        CRY-->>U: 📦 Direct return solidified answer
+    else hit_stale
+        CRY->>ORG: Carry execution_trace + pitfalls for refresh
+        ORG->>GI: Dispatch supplementation
+        GI-->>ORG: Supplementation done
+        ORG-->>QA: Regenerate answer after refresh
+    else miss
+        Note over QA: L0-L3 fan-out rewriting
+        QA->>MQS: L0 original / L1 term normalization / L2 intent enhancement / L3 HyDE
+        MQS-->>QA: chunk rows + question rows
+        Note over QA: RRF merge + chunk_id dedup + questions fold back to parent chunk
+        QA->>FS: Retrieve chunks/ + raw/
+        FS-->>QA: File system hits
+        Note over QA: Merge both layers + evidence sufficiency judgment
+        alt Sufficient evidence
+            QA-->>U: Answer + chunk/raw/URL citation
+        else Insufficient evidence
+            QA->>GI: Trigger get-info-agent
+            GI-->>QA: Re-retrieve after supplementation
+            QA-->>U: Answer + citation
+        end
+    end
+    par Solidify
+        QA->>ORG: Solidify this round's answer
+        ORG->>CRY: Write to data/crystallized/
+    and Self-heal check
+        QA->>SH: Recall trace + retrieval_scores
+        Note over SH: Low score / no hit / negative feedback → add questions + re-ingest
+        SH-->>SH: Update doc2query-index.json
+    end
 ```
 
 ### Get-Info Process
@@ -165,28 +217,43 @@ flowchart TD
 10. Update `keywords.db` and `priority.json` (`update-priority` idempotently backfills new domains LLM-high-confidence-classified as official to `official_domains` whitelist).
 
 ```mermaid
-flowchart TD
-    GAP[qa-agent Evidence Gap] --> PRE[Pre-checks<br/>Playwright + milvus-cli + bge-m3]
-    PRE --> READ[Read priority.json + keywords.db]
-    READ --> WRI[web-research-ingest<br/>Search + Scrape + Clean]
-    WRI --> WL{URL Domain<br/>in official_domains?}
-    WL -->|Hit| OD[official-doc<br/>Fast Path]
-    WL -->|Miss| LLM{LLM Four-Way Classification}
-    LLM -->|official-high| OD
-    LLM -->|official-low| OD
-    LLM -->|community| EX[LLM Extract Knowledge Points<br/>frontmatter urls Array<br/>+ Inline Source Annotation]
-    LLM -->|discard| X[Discard]
-    OD --> KP[knowledge-persistence<br/>5000 Threshold Chunking<br/>+ Generate 3-5 Synthetic QA]
-    EX --> KP
-    KP --> DUAL[raw + chunks Dual Persistence]
-    KP --> ING[ingest-chunks<br/>Chunk Rows + Question Rows<br/>dense + sparse]
-    ING --> UP[update-priority]
-    UP --> KDB[Update keywords.db<br/>+ priority.json]
-    UP --> DOM{Official-high<br/>New Domain Exists?}
-    DOM -->|Yes| WB[Idempotent Backfill<br/>official_domains Whitelist]
-    DOM -->|No| DONE[Return to qa-agent]
-    WB --> DONE
-    KDB --> DONE
+sequenceDiagram
+    participant QA as "qa-agent"
+    participant GI as "get-info-agent"
+    participant WRI as "web-research-ingest"
+    participant CLS as "Source Classification"
+    participant KP as "knowledge-persistence"
+    participant MV as "Milvus"
+    participant UP as "update-priority"
+
+    QA->>GI: Evidence gap
+    Note over GI: Pre-checks: Playwright + milvus-cli + bge-m3
+    GI->>GI: Read priority.json + keywords.db
+    GI->>WRI: Search + Scrape + Clean
+    WRI-->>CLS: Scraped results
+    CLS->>CLS: URL domain in official_domains?
+    alt Hit whitelist
+        CLS->>KP: official-doc fast path
+    else Miss whitelist
+        CLS->>CLS: LLM four-way classification
+        alt official-high / official-low
+            CLS->>KP: official-doc
+        else community
+            Note over CLS: LLM extract knowledge points + frontmatter url single string + inline source annotation
+            CLS->>KP: Extracted content
+        else discard
+            Note over CLS: Discard
+        end
+    end
+    KP->>KP: 5000 threshold chunking + generate 3-5 synthetic QA
+    KP->>KP: raw + chunks dual persistence
+    KP->>MV: ingest-chunks: chunk rows + question rows dense + sparse
+    MV->>UP: Ingestion complete
+    UP->>UP: Update keywords.db + priority.json
+    alt Official-high new domain exists
+        UP->>UP: Idempotent backfill official_domains whitelist
+    end
+    UP-->>QA: Return
 ```
 
 ---
@@ -224,13 +291,15 @@ A high-quality chunk must simultaneously satisfy:
 
 ### Synthetic QA Index (doc2query)
 
-Before each chunk is persisted, LLM generates 3-5 synthetic questions in user voice, written to frontmatter:
+Before each chunk is persisted, LLM generates 3-5 synthetic questions in user voice, written to frontmatter. In addition, `data/eval/doc2query-index.json` acts as the authoritative question index used by self-healing and re-ingestion:
 
 ```yaml
 questions: ["How to create Claude Code subagent?", "Required frontmatter fields for subagent?", "Relationship between subagent and plugin?"]
 ```
 
-`bin/milvus-cli.py ingest-chunks` automatically embeds each question independently (row type `kind=question`, `chunk_id` points to parent chunk). During retrieval, these question rows participate in RRF alongside body chunk rows, finally deduplicated by `chunk_id`, **significantly reducing the semantic gap between user colloquial queries and document terminology**.
+`bin/milvus-cli.py ingest-chunks` reads questions from `doc2query-index.json` first; if no matching `chunk_id` exists there, it falls back to chunk frontmatter. Each question is embedded independently (row type `kind=question`, `chunk_id` points to the parent chunk). During retrieval, these question rows participate in RRF alongside body chunk rows, finally deduplicated by `chunk_id`, **significantly reducing the semantic gap between user colloquial queries and document terminology**.
+
+The self-healing flow only adds questions and never edits chunk body text: low-score hit or negative feedback → write a signal file under `data/eval/self-heal-pending/` → independent `claude -p` triggers `self-heal-workflow` → update `doc2query-index.json` → run `ingest-chunks --replace-docs` for affected documents.
 
 ---
 
@@ -250,25 +319,26 @@ These are the boundaries that must be obeyed in the current project:
 
 ### Agents
 
-1. `qa-agent`: Main Q&A Agent. Check crystallized layer → Check RAG → Trigger get-info-agent supplementation when necessary → Answer → Trigger organize-agent solidification.
+1. `qa-agent`: Main Q&A Agent. Check crystallized layer → Check RAG → Trigger get-info-agent supplementation when necessary → Answer → Emit recall trace → Trigger self-heal-workflow when needed → Trigger organize-agent solidification.
 2. `organize-agent`: **Self-Evolving Crystallized Layer Dispatcher Agent**. Responsible for solidification, refresh, feedback processing, health checks; **does not modify raw layer**, carries original `execution_trace` + `pitfalls` to call get-info-agent during refresh.
 3. `get-info-agent`: External supplementation Agent. Orchestrates Playwright-cli scraping, cleaning, chunking, persistence.
-4. `upload-agent`: User local document upload Agent (parallel to `get-info-agent`, the two entry points converge at the `knowledge-persistence` layer). Receives local files → `doc-converter` converts to MD → `knowledge-persistence` uniformly ingests.
+4. `upload-agent`: User local document upload Agent (parallel to `get-info-agent`, the two entry points converge at the `knowledge-persistence` layer). Receives local files → `doc-converter` completes storage (original file archive + raw Markdown persistence + image resource preservation) → then hands off to `knowledge-persistence` for Agent/LLM semantic chunking and unified ingestion.
 
 ### Skills
 
 QA, Get-Info, Organize, and Upload — these four agents dispatch the following skills:
 
-1. `qa-workflow`: Crystallized layer hit detection (Step 0), L0-L3 fan-out rewriting, multi-query-search invocation, evidence sufficiency judgment, triggering organize-agent solidification (Step 9).
+1. `qa-workflow`: Crystallized layer hit detection (Step 0), L0-L3 fan-out rewriting, multi-query-search invocation, evidence sufficiency judgment, recall trace and self-heal trigger (Step 9), triggering organize-agent solidification (Step 10).
 2. `crystallize-workflow`: Crystallized layer hit detection / freshness judgment / write / refresh; semantics for `data/crystallized/index.json` and `<skill_id>.md` check-in/check-out.
 3. `crystallize-lint`: Crystallized layer health checks, periodic cleanup of rejected / garbage entries, detection of orphan files and corrupted files.
 4. `playwright-cli-ops`: Stable Playwright-cli invocation.
-5. `web-research-ingest`: Search, scrape, clean web content.
-6. `knowledge-persistence`: 5000 character threshold chunking, synthetic QA generation, raw/chunks persistence, Milvus hybrid persistence. **Shared downstream for both get-info and upload entry points.**
-7. `get-info-workflow`: Orchestrate execution order and failure policies of external supplementation sub-skills.
-8. `upload-ingest`: User document ingestion workflow, parallel to `get-info-workflow`; dispatches `doc-converter` + `knowledge-persistence`.
-9. `update-priority`: Update keyword and priority status (only invoked on the get-info path; the upload path has no URL/site and skips it).
-10. `brain-base-skill`: **External Agent Invocation Manual** — deployed in `~/.claude/skills` or `~/.codex/skills`, teaches other Agents how to invoke the knowledge base's two entry points via `claude -p ... --plugin-dir ... --agent brain-base:qa-agent|upload-agent --dangerously-skip-permissions`.
+5. `web-research-ingest`: Search, scrape, and clean web content.
+6. `knowledge-persistence`: 5000 character threshold chunking, synthetic QA generation, raw/chunks persistence, Milvus hybrid persistence. **Common downstream layer for both get-info and upload entry points.**
+7. `get-info-workflow`: Orchestrates execution order and failure strategy of external supplementation sub-skills.
+8. `upload-ingest`: User document ingestion workflow, parallel to `get-info-workflow`; first dispatches `doc-converter` for upload → storage, then hands raw Markdown to `knowledge-persistence`.
+9. `self-heal-workflow`: Background recall self-healing workflow. Reads recall trace / user feedback, records feedback, adds missing-dimension questions, writes `doc2query-index.json`, and re-ingests affected documents.
+10. `update-priority`: Updates keyword and priority state (called only by get-info path; upload path has no URL/site and skips it).
+11. `brain-base-skill`: **External Agent Invocation Manual** — installed under `~/.claude/skills` or `~/.codex/skills`, teaching other Agents how to invoke the two brain-base entry points via `claude -p ... --plugin-dir ... --agent brain-base:qa-agent|upload-agent --dangerously-skip-permissions`.
 
 ---
 
@@ -366,7 +436,7 @@ The following commands default to execution in the `brain-base` repository root 
 
 If you want the "long-term runnable, full-permission automation, background supplementation strategy" usage, see the complete manual:
 
-- [OPERATIONS_MANUAL.md](./OPERATIONS_MANUAL.md) | [OPERATIONS_MANUAL_en.md](./OPERATIONS_MANUAL_en.md)
+- [OPERATIONS_MANUAL.md](./md/OPERATIONS_MANUAL.md) | [English](./md/OPERATIONS_MANUAL_en.md)
 
 ### 1. Start Milvus
 
@@ -544,12 +614,13 @@ Table structure:
 
 1. **`keywords`**: Keyword popularity records (site_id, keyword, query_count, last_query_at).
 
-Extracted source URLs are not separately stored in tables: they are written directly as document metadata in the chunk frontmatter `urls` field and inline `> Source: <url>` annotations, traceable via grep or file reading.
+Community source URLs are not separately stored in tables: they are written directly as document metadata in the chunk frontmatter `url` field (single string, one URL per doc) and inline `> Source: <url>` annotations, traceable via grep or file reading.
 
 ### Directory Structure
 
 ```text
 brain-base/
+├── .mcp.json
 ├── requirements.txt               # Python deps: pymilvus[model] / FlagEmbedding / mineru[pipeline]
 ├── agents/
 │   ├── qa-agent.md
@@ -562,6 +633,7 @@ brain-base/
 │   ├── crystallize-lint/         # Crystallized Layer Health Checks
 │   ├── get-info-workflow/
 │   ├── upload-ingest/            # User document ingestion workflow (parallel to get-info-workflow)
+│   ├── self-heal-workflow/        # Recall self-healing workflow (triggered by background claude -p)
 │   ├── playwright-cli-ops/
 │   ├── web-research-ingest/
 │   ├── knowledge-persistence/    # Shared downstream for both entry points
@@ -569,6 +641,8 @@ brain-base/
 │   └── brain-base-skill/         # External Agent Invocation Manual (documents both qa-agent and upload-agent entries)
 ├── bin/
 │   ├── milvus-cli.py
+│   ├── eval-recall.py             # recall@K, feedback, coverage, doc2query-index
+│   ├── source-priority.py         # source_priority annotation and source conflict detection
 │   ├── doc-converter.py          # MinerU + pandoc + native TXT/MD uniform conversion to Markdown
 │   └── scheduler-cli.py
 ├── planning/                     # Project convergence and transformation plans
@@ -581,7 +655,15 @@ brain-base/
 │   │   ├── index.json            # Solidified skill index
 │   │   └── <skill_id>.md         # Each solidified skill one file
 │   ├── priority.json
-│   └── keywords.db
+│   ├── keywords.db
+│   └── eval/
+│       ├── doc2query-index.json   # Authoritative questions index
+│       ├── coverage-report.json   # 6-dimension coverage report
+│       ├── feedback.db            # User feedback SQLite database
+│       ├── results/               # Recall evaluation results
+│       └── self-heal-pending/     # Self-heal signal files
+└── mcp/
+    └── milvus-rag/
 ```
 
 ---
@@ -596,7 +678,8 @@ python bin/milvus-cli.py inspect-config
 python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 
 # Ingest chunk Markdown to Milvus (default append; hybrid mode auto-writes dense + sparse;
-# also writes questions list from frontmatter as independent rows, kind=question)
+# questions are read from data/eval/doc2query-index.json first, with frontmatter as fallback;
+# each question is written as an independent row, kind=question)
 python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/*.md"
 
 # Overwrite/replace a document (delete then write, use with caution)
@@ -617,12 +700,78 @@ python bin/milvus-cli.py multi-query-search \
   --query "Claude Code subagent defined through YAML files under .claude/agents..." \
   --top-k-per-query 20 --final-k 10
 
+# Build recall evaluation queries from chunk frontmatter questions
+python bin/eval-recall.py build-queries --chunks-dir data/docs/chunks --output data/eval/queries.json
+
+# Run Milvus + embedding recall evaluation
+python bin/eval-recall.py run --queries data/eval/queries.json --mode embedding --top-k 10
+
+# Run full brain-base recall evaluation (grep + embedding)
+python bin/eval-recall.py run --queries data/eval/queries.json --mode full --top-k 10
+
+# Record user feedback and convert high-rated feedback into real evaluation queries
+python bin/eval-recall.py record-feedback --question "..." --rating 5 --type positive --chunk-ids "[\"chunk-id\"]" --doc-ids "[\"doc-id\"]"
+python bin/eval-recall.py feedback-to-queries --output data/eval/queries-real.json
+
+# Generate 6-dimension question coverage report
+python bin/eval-recall.py coverage-check --chunks-dir data/docs/chunks --output data/eval/coverage-report.json
+
+# Update the authoritative doc2query index (used by self-healing)
+python bin/eval-recall.py update-doc2query-index --chunk-id "<chunk-id>" --questions "[\"question 1\", \"question 2\"]"
+
+# Annotate source_priority and detect source conflicts
+python bin/source-priority.py add-priority --apply
+python bin/source-priority.py detect-conflicts
+
 # Check if priority update time window reached
 python bin/scheduler-cli.py --check
 
 # Update keyword
 python bin/scheduler-cli.py --keyword "claude-code" --site anthropic
 ```
+
+### Manual Offline Evaluation
+
+Here, "offline" means **you do not need to start `qa-agent`, `get-info-agent`, Playwright-cli, or any web scraping flow**. However, the `run` subcommand still requires your local **Milvus + embedding runtime** to be available.
+
+Minimal sequence:
+
+1. Confirm Milvus and local vectorization runtime are available:
+
+```bash
+python bin/milvus-cli.py inspect-config
+python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
+```
+
+2. If you do not yet have an evaluation query set, build it from frontmatter `questions` in `data/docs/chunks/`:
+
+```bash
+python bin/eval-recall.py build-queries --chunks-dir data/docs/chunks --output data/eval/queries.json
+```
+
+3. Run embedding-only evaluation manually:
+
+```bash
+python bin/eval-recall.py run --queries data/eval/queries.json --mode embedding --top-k 10
+```
+
+4. Run full evaluation manually (grep + embedding):
+
+```bash
+python bin/eval-recall.py run --queries data/eval/queries.json --mode full --top-k 10
+```
+
+5. Compare two evaluation runs if needed:
+
+```bash
+python bin/eval-recall.py diff data/eval/results/<old>.json data/eval/results/<new>.json
+```
+
+Additional notes:
+
+- **`build-queries` / `diff` / `record-feedback` / `feedback-to-queries`** can run without Milvus.
+- **`run`** writes reports to `data/eval/results/`, which is convenient for manual baseline comparison.
+- Current baseline: `data/eval/queries.json` contains 81 synthetic queries, and both `embedding` and `full` paths currently achieve Recall@1/3/5 = 100%.
 
 ### Provider Switching and Collection Rebuild
 
@@ -664,20 +813,25 @@ Switching `KB_EMBEDDING_PROVIDER` (e.g., bge-m3 ↔ sentence-transformer) change
 This repository currently completed:
 
 1. All `skills` and `agents` elevated to production-grade workflow definitions.
-2. Clear collaboration boundaries for QA, Get-Info, and Organize three types of Agents.
+2. Clear collaboration boundaries for QA, Get-Info, Organize, and Upload four types of Agents/Workflows.
 3. raw/chunks dual-replica persistence + 5000 character threshold chunking rules.
 4. Default BGE-M3 hybrid ingestion pipeline (dense + sparse), `ingest-chunks` end-to-end available.
 5. Synthetic QA (doc2query) index layer: 3-5 questions per chunk independently vectorized.
 6. multi-query-search CLI: L0-L3 fan-out + RRF merge + dedup by chunk_id.
-7. Non-official source content extraction and traceability annotation: whitelist fast lane + LLM four-way classification + `update-priority` self-learning backfill `official_domains`, full traceability in extracted docs `urls` frontmatter field and inline `> Source: <url>` annotations.
-8. **Self-Evolving Crystallized Layer (Crystallized Skill Layer)**: Benchmarked against Karpathy LLM Wiki pattern, `organize-agent` + `crystallize-workflow` + `crystallize-lint` maintain solidified answers under `data/crystallized/`; hit and fresh direct return, hit but stale auto-carry original `execution_trace`/`pitfalls` dispatch get-info-agent for precise refresh. Does not intrude raw layer, automatic degradation to RAG main chain when crystallized layer corrupted.
-9. **Local document upload ingestion (Upload Ingest path)**: `upload-agent` + `upload-ingest` + `bin/doc-converter.py` run fully in parallel to `get-info-*`, converging at the `knowledge-persistence` layer; supports PDF / DOCX / PPTX / XLSX / LaTeX / TXT / MD / PNG / JPG; defaults to MinerU 3.1 parsing (strong CJK handling, CPU-runnable). Frontmatter tag `source_type: user-upload`; zero schema migration via Milvus `enable_dynamic_field=True`.
+7. Non-official source content extraction and traceability annotation: whitelist fast lane + LLM four-way classification + `update-priority` self-learning backfill `official_domains`, full traceability in community docs `url` frontmatter field (one URL per doc) and inline `> Source: <url>` annotations.
+8. **Self-Evolving Crystallized Layer (Crystallized Skill Layer)**: `organize-agent` + `crystallize-workflow` + `crystallize-lint` + `bin/crystallize-cli.py` maintain hot/cold two-tier solidified answers; low-value questions skipped, high-value questions enter hot, medium-value enter cold observation zone; cold answers reaching hit threshold can be auto or manually promoted.
+9. **Local document upload ingestion (Upload Ingest path)**: `upload-agent` + `upload-ingest` + `bin/doc-converter.py` parallel to `get-info-*`, converging at the `knowledge-persistence` layer; supports PDF / DOCX / PPTX / XLSX / LaTeX / TXT / MD / PNG / JPG / PY / TS / GO / RS. Frontmatter tag `source_type: user-upload`, zero schema migration via Milvus `enable_dynamic_field=True`.
+10. **Evidence credibility and freshness annotation**: qa-workflow mandates output of source and freshness evidence table, tiered by `source_type` and `age_days` into Tier-1/2/3; >90 days prompts freshness risk, >180 days suggests evidence refresh.
+11. **Content hash deduplication on ingestion**: raw Markdown body computes `content_sha256`, pre-ingestion `hash-lookup` for dedup; historical documents backfilled via `backfill-hashes`; `find-duplicates` available for periodic health checks.
+12. **Offline smoke test framework**: `pytest tests/smoke -q` covers crystallize-cli, milvus-cli filesystem commands, P2-1 hash dedup trio, P2-3 eval-recall CLI, totaling 55 tests; Milvus-dependent integration tests skipped by default.
+13. **Progress and acceptance documentation**: `BRAIN_BASE_CHARTER.md` preserves design charter, `BRAIN_BASE_PROGRESS.md` tracks pain-point completion status and remaining roadmap in tabular form.
+14. **Recall evaluation baseline and feedback loop (P2-3 Phase 1/2/3)**: `bin/eval-recall.py` can build `data/eval/queries.json` from chunk frontmatter questions, and evaluate embedding-only vs. full (grep+embedding) recall separately; current 81 synthetic queries achieve Recall@1/3/5 = 100% on both paths. Also supports `record-feedback` writing to `data/eval/feedback.db`, then `feedback-to-queries` generating real user query evaluation sets.
 
-If you continue extending this project, recommended priorities:
+Current high-priority pain points (P0/P1) are completed; P2 content hash deduplication and recall evaluation baseline are done. Recommended extension priorities based on real usage feedback:
 
-1. Chunk quality regression tests and deduplication strategy (automated validation of 5000 character threshold and questions field completeness).
-2. Evaluation set (gold queries → expected chunk_ids), run multi-query-search to quantify recall rate.
-3. Synthetic QA offline generation script (currently generated by agent before write; can add `synthesize-questions` CLI for historical chunk backfill).
-4. Crystallized layer hit detection upgrade from "LLM semantic discrimination" to "embedding similarity + LLM dual validation" two-level filtering (when crystallized skill count exceeds 200).
-5. Batch crystallized answers into Milvus, let RAG retrieval also hit existing Crystallized Skills — LLM Wiki v2 "crystallization from exploration" approach.
+1. Batch upload progress + resumable upload (P2-2): implement when starting to bulk-import PDFs/papers.
+2. Retrieval quality evaluation expansion (P2-3 follow-up): integrate qa-agent auto-feedback recording, add hard negatives and doc2query self-healing.
+3. Crystallized feedback auto-closure (T4): reduce `pending` → `confirmed` reliance on manual user feedback.
+4. Full data export (P3-3): implement when knowledge base starts cross-machine migration or team sharing.
+5. Crystallized layer embedding index (P3-1): implement when crystallized skill count exceeds 200.
 

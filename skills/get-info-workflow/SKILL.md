@@ -227,18 +227,22 @@ LLM 输出四分类结果：`official-high` / `official-low` / `community` / `di
    - `source_title`：原始页面标题。
    - `source_author`：作者（如可识别）。
    - `extracted_at`：提炼日期（YYYY-MM-DD）。
-4. **重组为文档**：将同一主题的多个提炼知识点合并为一篇 Markdown 文档，结构为：
-   - frontmatter 中 `source_type: extracted`（区别于官方文档的 `official-doc`）。
-   - frontmatter 中 `urls` 字段列出所有来源 URL（JSON inline 数组）。
-   - 正文按知识点逻辑分组，每个知识点前用 `> 来源: <url>` 标注出处。
+4. **一个 URL = 一个 raw 文档（硬约束）**：每篇 community 文档独立产出，**不跨 URL 合并**。结构为：
+   - frontmatter 中 `source_type: community`（区别于官方文档的 `official-doc`）。
+   - frontmatter 中 `url` 字段记录本篇来源 URL（单个字符串，不是数组）。
+   - frontmatter 中 `fetched_at` 记录抓取日期。
+   - 正文保留提炼后的知识点，每个知识点前用 `> 来源: <url>` 标注出处。
+   - **禁止将多个 URL 的提炼内容合并为一篇文档**——即使主题相同，每个 URL 也必须独立成文。
 5. **质量门槛**：提炼后文档正文必须 ≥ 200 字符，否则丢弃（说明该非官方来源无实质可提炼内容）。
+
+> **为什么禁止跨 URL 合并？** 合并后的文档把多个信源的内容混在一起，丢失了信源边界。当信源之间出现冲突（如官方仓库 48.5K stars vs 营销号旧文 7.1K stars），合并文档无法仲裁。每个 URL 独立保留原始内容，信源冲突才能在 chunk 层检测、在固化层仲裁。
 
 #### 6.3 输出
 
 本步骤输出两类文档草稿：
 
-1. **official-doc 类型**：原样传递，不做修改。
-2. **extracted 类型**：经过提炼、溯源标注、重组后的新文档草稿。
+1. **official-doc 类型**：原样传递，不做修改。每篇对应一个 URL。
+2. **community 类型**：经过提炼、溯源标注后的独立文档。每篇对应一个 URL。
 
 两类文档统一进入步骤 7 进行去重与命名。
 
@@ -305,7 +309,7 @@ LLM 输出四分类结果：`official-high` / `official-low` / `community` / `di
 3. 若含非官方来源，有提炼记录（标注了来源 URL）。
 4. 有 raw Markdown。
 5. 有 chunk Markdown（已遵守 5000 字符阈值规则）。
-6. 每个 chunk 的 frontmatter 含 `questions` 字段（除空目录页外应有 3〜5 个问题）；extracted 类型 chunk 的 frontmatter 还必须含 `source_type: extracted` 和 `urls` 字段。
+6. 每个 chunk 的 frontmatter 含 `questions` 字段（除空目录页外应有 3〜5 个问题）；community 类型 chunk 的 frontmatter 还必须含 `source_type: community` 和 `url` 字段。
 7. 有 Milvus 入库记录，且报告同时含 `chunk_rows` 与 `question_rows` 计数。
 8. 有 `keywords.db` 更新。
 9. 有 `priority.json` 时间戳或权重更新。

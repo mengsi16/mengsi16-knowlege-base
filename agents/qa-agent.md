@@ -6,6 +6,7 @@ tools: Agent, Read, Grep, Glob, Bash, Write, Edit, TodoList
 skills:
   - qa-workflow
   - crystallize-workflow
+  - self-heal-workflow
 permissionMode: bypassPermissions
 ---
 
@@ -117,6 +118,16 @@ permissionMode: bypassPermissions
 3. 标明依据来自本地知识还是新抓取资料。
 4. 引用文件路径或文档标识。
 5. 如果当前只能给出部分答案，明确说明哪些点仍待确认。
+
+## 触发自愈的条件
+
+qa-agent 在回答后，如果检测到召回质量差，通过后台 `claude -p` 进程触发 `self-heal-workflow` 执行自愈。详细触发条件和方式见 `qa-workflow` 步骤 9。
+
+**关键原则**：
+1. 自愈是 fire-and-forget，不阻塞用户对话。
+2. 自愈只补 question，不改 chunk 正文。
+3. 用户看不到自愈过程。
+4. 自愈失败不影响已给到用户的回答。
 
 ## 触发 Organize Agent 的条件
 

@@ -514,13 +514,14 @@ qa-agent（发现 hit_stale）
 
 **P0-2 端到端 smoke test 脚本**✅ 已交付（CLI 级 pytest 框架）
 
-**实现方式**：pytest smoke test 框架，覆盖 `bin/crystallize-cli.py` 和 `bin/milvus-cli.py` 两个 CLI 的**纯文件系统命令**（无需 Milvus / 网络）。47 个测试 ~30 秒跑完。
+**实现方式**：pytest smoke test 框架，覆盖 `bin/crystallize-cli.py`、`bin/milvus-cli.py`、`bin/eval-recall.py` 的**纯文件系统命令**（无需 Milvus / 网络）。55 个测试 ~30 秒跑完。
 
 **已覆盖（offline，`pytest tests/smoke -q` 默认运行）**：
 
  - `crystallize-cli.py`: `stats` / `list-hot` / `list-cold` / `show-cold` / `hit` / `promote` / `demote` — 七个命令的完整行为契约（21 测试）
  - `milvus-cli.py`: `list-docs` / `show-doc` / `stats` / `stale-check` — 纯文件系统命令 + JSON 输出结构契约（13 测试）
  - `milvus-cli.py` P2-1: `hash-lookup` / `find-duplicates` / `backfill-hashes` — 内容哈希去重、重复检测、历史 backfill（13 测试）
+ - `eval-recall.py` P2-3: `build-queries` / `diff` / `record-feedback` / `feedback-to-queries` / JSON error — 召回评估与反馈 CLI 的离线契约（8 测试）
 
 **尚未覆盖（需 Milvus 可用，标 `requires_milvus` 默认跳过）**：
 
@@ -535,7 +536,8 @@ qa-agent（发现 hit_stale）
 4. `tests/smoke/test_crystallize_cli.py` — 21 个测试，覆盖冷热分层生命周期、原子写入、confirmed 保护机制
 5. `tests/smoke/test_milvus_cli.py` — 13 个测试，覆盖 P1-4 trust_tier / evidence_date 字段
 6. `tests/smoke/test_content_hash.py` — 13 个测试，覆盖 P2-1 hash lookup / duplicates / backfill / CRLF 规范化
-7. `tests/README.md` — 运行说明 + 覆盖矩阵 + 对 agent 的价值说明
+7. `tests/smoke/test_eval_recall.py` — 8 个测试，覆盖 P2-3 build-queries / diff / record-feedback / feedback-to-queries / JSON error
+8. `tests/README.md` — 运行说明 + 覆盖矩阵 + 对 agent 的价值说明
 
 **核心设计价值**：保护 CLI 的 **JSON 输出结构**。qa-agent / organize-agent / get-info-agent 都依赖这些 CLI 输出做下游判断——一旦字段名漂移或增删 top-level key，agent 解析会悄悄错。smoke test 第一时间捕获。
 
@@ -573,7 +575,7 @@ python bin/milvus-cli.py show-doc <doc_id>
 | 档位 | 条件 | 示例 |
 |------|------|------|
 | 🟢 Tier-1 高可信 | `official-doc` 且证据年龄 ≤ 90 天 | Anthropic 官方文档，上周抓取 |
-| 🟡 Tier-2 中可信 | `extracted`（溯源标注）≤ 180 天；或 `official-doc` 90〜180 天 | 社区文章提炼；略过期的官方文档 |
+| 🟡 Tier-2 中可信 | `community`（溯源标注）≤ 180 天；或 `official-doc` 90〜180 天 | 社区文章提炼；略过期的官方文档 |
 | Tier-3 低可信 | `user-upload`；任何 > 180 天；`source_type` 缺失 | 用户自传资料；过期文档；早期未打标签的数据 |
 
 整篇答案可信度**取所有证据中的最低档**（木桶效应）。每次回答必须附 `📚 来源与时效` 证据表；证据年龄 > 90 天强制 `⚠️ 时效性提示`；> 180 天强制 `💡 获取更新证据`。
@@ -660,8 +662,17 @@ python bin/milvus-cli.py backfill-hashes              # 真跑
 **P2-2 批量上传进度 + 断点续传**（场景C盲区）
 upload-agent 处理多文件时写入 `data/docs/uploads/.import-state.json`，记录每个文件处理状态。中断后重新运行跳过已完成文件。
 
-**P2-3 检索质量评估集**
-维护 `data/eval/queries.json`：10~20 个典型问题 + 期望命中的 chunk_id。每次修改检索链路后跑 `python bin/milvus-cli.py eval` 量化 recall@K 变化，防止优化时引入退步。
+**P2-3 召回评估与持续优化体系**✅ Phase 1/2/3 已交付
+完整设计见 `md/RECALL_EVAL_DESIGN.md`。三层架构：
+
+1. **评估层**：`data/eval/queries.json`（81 条合成测试问题）→ `bin/eval-recall.py run` 量化 recall@K → 按主题/难度/检索路径分层诊断。Phase 1/2 已支持 `--mode embedding` 与 `--mode full`（grep + embedding），当前基线 Recall@1/3/5 = 100%。及格线：Recall@5 > 85%，Recall@1 > 60%。
+2. **反馈层**：`data/eval/feedback.db`（SQLite）沉淀用户对问答的评分与评论 → `feedback-to-queries` 转为真实测试问题（origin=real）→ 驱动优化方向。Phase 3 已交付最小 CLI 闭环。
+3. **自愈层**：Agent 自测 recall@K → 不达标时重新 doc2query（`data/eval/doc2query-index.json` 为权威索引）→ 重跑 ingest-chunks → 重测 → 达标。自愈只改索引层，不动 chunk 文件（保持原始层不可变）。
+
+关键设计决策：
+- **doc2query 双写分离**：chunk frontmatter 保留 questions（可读性），doc2query-index.json 为权威索引（可更新、可自愈）
+- **grep+embedding 分别评估**：量化 grep 对召回的真实贡献，判断是否需调 sparse 权重
+- **Agent 可自测但不可自动自愈**：修改 Milvus 数据需用户确认
 
 ---
 

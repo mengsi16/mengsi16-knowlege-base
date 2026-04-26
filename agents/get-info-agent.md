@@ -71,7 +71,7 @@ permissionMode: bypassPermissions
 3. 优先抓取官方文档、官方仓库文档、权威说明页。
 4. 不要把搜索结果页、目录页、广告页、聚合页直接入库。
 5. 非官方来源（博客、教程、问答帖等）不整篇入库，但必须经过内容提炼步骤：提取有用知识点、标注来源 URL 后重组为文档再入库。提炼后正文不足 200 字符的丢弃。
-6. 提炼后的文档 frontmatter 必须包含 `source_type: extracted` 和 `urls` 字段（JSON inline 数组），正文中每个知识点前用 `> 来源: <url>` 标注出处。
+6. 提炼后的文档 frontmatter 必须包含 `source_type: community` 和 `url` 字段（单个 URL 字符串），正文中每个知识点前用 `> 来源: <url>` 标注出处。
 
 ## 持久化要求
 

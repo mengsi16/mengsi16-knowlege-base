@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BIN_DIR = REPO_ROOT / "bin"
 CRYSTALLIZE_CLI = BIN_DIR / "crystallize-cli.py"
 MILVUS_CLI = BIN_DIR / "milvus-cli.py"
+EVAL_RECALL_CLI = BIN_DIR / "eval-recall.py"
 
 
 @pytest.fixture(scope="session")
@@ -44,6 +45,12 @@ def crystallize_cli_path() -> Path:
 def milvus_cli_path() -> Path:
     assert MILVUS_CLI.exists(), f"milvus-cli.py missing at {MILVUS_CLI}"
     return MILVUS_CLI
+
+
+@pytest.fixture(scope="session")
+def eval_recall_cli_path() -> Path:
+    assert EVAL_RECALL_CLI.exists(), f"eval-recall.py missing at {EVAL_RECALL_CLI}"
+    return EVAL_RECALL_CLI
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +120,37 @@ def run_milvus(milvus_cli_path: Path):
                 f"stderr={proc.stderr}; stdout={proc.stdout}"
             )
         # Try to parse JSON but tolerate non-JSON output for error cases
+        try:
+            payload: dict[str, Any] | str = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            payload = proc.stdout
+        return proc.returncode, payload, proc.stderr
+
+    return _runner
+
+
+@pytest.fixture
+def run_eval_recall(eval_recall_cli_path: Path):
+    """Run eval-recall and return parsed JSON."""
+
+    def _runner(
+        *args: str,
+        allow_fail: bool = False,
+    ) -> tuple[int, dict[str, Any] | str, str]:
+        cmd = [sys.executable, str(eval_recall_cli_path), *args]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=REPO_ROOT,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+        if not allow_fail:
+            assert proc.returncode == 0, (
+                f"eval-recall exited {proc.returncode}; "
+                f"stderr={proc.stderr}; stdout={proc.stdout}"
+            )
         try:
             payload: dict[str, Any] | str = json.loads(proc.stdout)
         except json.JSONDecodeError:

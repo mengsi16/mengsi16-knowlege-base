@@ -21,6 +21,7 @@ qa-agent 在执行本 workflow 前，**必须先调用 `TodoList` 工具**，按
 8. 步骤6：基于已验证证据生成答案（或降级回答） → pending
 9. 步骤7：答案格式化与来源标注 → pending
 10. 步骤8：委托 organize-agent 固化答案（降级模式下跳过） → pending
+11. 步骤9：Recall trace 输出 + 自愈触发判断 → pending
 
 **步骤8 不可跳过**：只要满足固化条件（答案完整、有证据、非一次性问题、无敏感信息、非 hit_fresh 直接返回），就必须触发 organize-agent。固化失败不影响已返回的答案。
 
@@ -158,7 +159,7 @@ qa-agent 在执行本 workflow 前，**必须先调用 `TodoList` 工具**，按
 进入此分支时：
 
 1. `crystallize-workflow` 已经把 `hit_count += 1` 和 `last_hit_at` 写入 `index.json`，**不需要本 workflow 再写**。
-2. qa-workflow 继续走完整 RAG（步骤 1〜8），但**必须**把 `cold_evidence_summary` 作为一条额外候选证据纳入步骤 5 的合并表，**按 `source_type: extracted` 处理**（因为冷藏条目本身就是 LLM 综合过的次级证据，不是原始文档）。
+2. qa-workflow 继续走完整 RAG（步骤 1〜8），但**必须**把 `cold_evidence_summary` 作为一条额外候选证据纳入步骤 5 的合并表，**按 `source_type: community` 处理**（因为冷藏条目本身就是 LLM 综合过的次级证据，不是原始文档）。
 3. 证据表里显示为：`| 冷藏层摘要 | 🟡 提炼（cold） | crystallized:<skill_id> | YYYY-MM-DD | N 天 |`，让用户看到这条证据的冷藏身份。
 4. 本 workflow 的最终回答如果确实用到了冷藏摘要，在步骤 8.1.2 的整体 `可信度` 之后、`⚠️ 时效性提示` 之前额外加一行：`> ❄️ 本答案参考了冷藏固化条目 <skill_id>（hit_count: N），继续反复命中将自动晋升到活跃层。`
 
@@ -352,7 +353,7 @@ Milvus 检索要求：
 | 档位 | 条件 | Emoji |
 |------|------|-------|
 | **Tier-1 高可信** | `source_type == official-doc` **且** 证据年龄 ≤ 90 天 | 🟢 |
-| **Tier-2 中可信** | `source_type == extracted`（有 `> 来源:` 溯源标注）**且** ≤ 180 天；或 `official-doc` 90〜180 天 | 🟡 |
+| **Tier-2 中可信** | `source_type == community`（有 `> 来源:` 溯源标注）**且** ≤ 180 天；或 `official-doc` 90〜180 天 | 🟡 |
 | **Tier-3 低可信** | `source_type == user-upload`（用户自己上传）；或任何 > 180 天；或 `source_type == unknown` | 🟠 |
 
 整篇答案的可信度**取最低档**，不得取平均或最高档（证据链的可信度由最弱一环决定）。
@@ -418,11 +419,76 @@ Milvus 检索要求：
 2. 擅长回答的是概念性、原理性、方法论问题；不擅长的是实时事实和具体配置。对后者应明确说“降级模式无法给出可靠结果，请恢复基础设施后重新提问”。
 3. 如果有少量本地证据，上面的 `+ N 条本地文件系统证据` 字段应填真实数量，并在答案正文中显示引用该证据（阻止 LLM 忽略真实命中只用训练数据）。
 
-### 步骤9: 委托 Organize Agent 固化本轮答案
+### 步骤9: Recall Trace 输出与自愈触发
 
-这是 qa-workflow 的**最后一步**，在回答已经给到用户之后异步执行（不阻断本轮响应返回）。
+本步骤在步骤 8（回答）之后执行，负责输出本轮的 recall trace 并判断是否需要触发后台自愈。
 
-#### 9.1 触发条件
+#### 9.1 Recall Trace 格式
+
+在内部上下文中记录以下结构化信息（不输出给用户）：
+
+```json
+{
+  "question": "用户原问题",
+  "returned_chunk_ids": ["chunk-1", "chunk-2"],
+  "returned_doc_ids": ["doc-1"],
+  "retrieval_scores": [0.03, 0.01],
+  "answer_summary": "回答摘要（50字以内）",
+  "session_id": "当前会话标识",
+  "timestamp": "2026-04-26T12:00:00Z"
+}
+```
+
+其中 `retrieval_scores` 来自步骤 4 的 multi-query-search 返回结果。如果步骤 4 被跳过（Milvus 不可用），`retrieval_scores` 为空数组。
+
+#### 9.2 自愈触发条件
+
+满足以下**任一**条件时，触发后台自愈进程：
+
+1. **低分命中**：`retrieval_scores` 非空且最高分 ≤ 0.02（召回层可能漏了更好的 chunk）
+2. **无命中**：`returned_chunk_ids` 为空且步骤 3 的文件系统检索也无命中
+3. **用户反馈**：用户在下一轮对话中对本轮回答表达不满（"不对"/"错了"/"不是这个"），且 `retrieval_scores` 显示低分
+
+#### 9.3 触发方式
+
+将 recall trace 写入信号文件，然后启动独立 `claude -p` 进程处理：
+
+```bash
+# 1. 写信号文件
+python -c "
+import json, os, datetime
+signal = {
+    'question': '<用户原问题>',
+    'returned_chunk_ids': <chunk_id 列表>,
+    'returned_doc_ids': <doc_id 列表>,
+    'retrieval_scores': <分数列表>,
+    'answer_summary': '<回答摘要>',
+    'feedback_type': 'low_score',
+    'session_id': '<session_id>'
+}
+os.makedirs('data/eval/self-heal-pending', exist_ok=True)
+open('data/eval/self-heal-pending/<session_id>.json', 'w', encoding='utf-8').write(
+    json.dumps(signal, ensure_ascii=False, indent=2)
+)
+"
+
+# 2. 后台触发自愈（fire-and-forget）
+claude -p "读取 data/eval/self-heal-pending/<session_id>.json 中的反馈信号，使用 self-heal-workflow skill 执行召回自愈。完成后删除信号文件。" &
+```
+
+#### 9.4 硬约束
+
+1. **fire-and-forget**：启动 `claude -p` 后不等待结果，用户对话不受阻塞。
+2. **信号文件必须先写**：`claude -p` 进程需要从文件读取信号，不能只靠命令行参数（太长会截断）。
+3. **不向用户暴露自愈**：用户看不到自愈过程，只能看到回答。自愈是底层优化。
+4. **自愈失败不影响回答**：即使 `claude -p` 启动失败，本轮回答已经给到用户。
+5. **同一 session 不重复触发**：如果 `data/eval/self-heal-pending/<session_id>.json` 已存在，不重复写入。
+
+### 步骤10: 委托 Organize Agent 固化本轮答案
+
+在回答已经给到用户之后异步执行（不阻断本轮响应返回）。
+
+#### 10.1 触发条件
 
 满足以下全部条件时触发：
 
@@ -432,7 +498,7 @@ Milvus 检索要求：
 4. 答案不包含敏感信息（凭证、API key、个人身份信息）。
 5. 本轮不是“固化层命中 hit_fresh 直接返回”的分支（`hit_fresh` 不需要重复固化）。
 
-#### 9.2 分支类别
+#### 10.2 分支类别
 
 | 本轮来源 | Organize Agent 模式 |
 |---|---|
@@ -441,7 +507,7 @@ Milvus 检索要求：
 | 步骤 0 返回 `hit_stale` + 刷新成功 | `refresh`（由 organize-agent 内部在刷新流程中自动完成，本步骤只需重新触发用户反馈录入机制；若固化层内部已经自动写入，本步骤可直接跳过） |
 | 用户在本轮对上一轮固化答案表达 confirm / reject / 补充 | `feedback`（与 `crystallize` 互斥：本轮只回复反馈，不站为新问答新固化） |
 
-#### 9.3 触发参数
+#### 10.3 触发参数
 
 构造 `crystallize` 模式的 JSON payload（详见 `@agents/organize-agent.md`）：
 
@@ -464,7 +530,7 @@ Milvus 检索要求：
 }
 ```
 
-#### 9.4 硬约束
+#### 10.4 硬约束
 
 1. 固化失败（磁盘满 / 权限不足 / organize-agent 不可达）时**不得回溯用户**。本轮回答已给到用户，固化是底层优化，失败只需写日志。
 2. 触发 organize-agent 后不要等待它返回结果再回应用户——qa-workflow 的主路径在步骤 8 之后已结束，本步骤仅为侧面写入。
@@ -496,3 +562,4 @@ Milvus 检索要求：
 3. `organize-agent` 负责固化层的写入与刷新调度，由本 skill 步骤 9 触发；步骤 0 的 `hit_stale` 分支也需要通过 organize-agent 完成刷新。
 4. `get-info-agent` 负责补充外部资料。
 5. `update-priority` 由 Get-Info 成功抓取或调度流程触发，不由 QA 直接重写优先级配置。
+6. `self-heal-workflow` 由本 skill 步骤 9 触发，负责召回失败后的 question 补充和重新入库。触发方式为独立 `claude -p` 进程，fire-and-forget。

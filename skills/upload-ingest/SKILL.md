@@ -190,7 +190,7 @@ keywords: <逗号分隔，由用户提供或后续 organize 补全>
 规则：
 
 1. `doc_id` 必须和 `doc-converter` 返回一致。
-2. `source_type` 必须为 `user-upload`（**新增值**，与 `official-doc` / `extracted` 并列）。
+2. `source_type` 必须为 `user-upload`（**新增值**，与 `official-doc` / `community` 并列）。
 3. `original_file` 必须填 `doc-converter` 返回的归档路径。
 4. `url` 字段冒号后直接留空（不写 `""`，frontmatter 解析器不去引号会得到字面量 `""`）。
 5. `title` 取值顺序：用户显式提供 → raw 正文首个 H1/H2 → 原始文件名（去扩展名）。
