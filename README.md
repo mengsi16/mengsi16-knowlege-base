@@ -419,9 +419,43 @@ QA、Get-Info、Organize、Upload 四个 agent 调度以下 skills：
 
 ## 外部 Agent 调用 brain-base
 
-brain-base 不仅能在 Claude Code 中作为 Plugin 使用，任何安装了 Claude Code 的 系统 都可以通过命令行调用它。
+brain-base 不仅能在 Claude Code 中作为 Plugin 使用，任何安装了 Claude Code 的系统都可以通过命令行调用它。
 
-### 调用方式对比
+### 推荐方式：brain-base-cli（统一外部 CLI）
+
+`bin/brain-base-cli.py` 是面向外部 Agent 的统一调用入口，提供 8 条命令、结构化 JSON 输出、`stream-json` 实时中间状态可见，无需手动拼装 `claude -p` 参数：
+
+```bash
+# 健康检查
+python bin/brain-base-cli.py health
+
+# 纯向量检索（不调用 LLM，快速）
+python bin/brain-base-cli.py search --query "bge-m3 用法" --query "BGE-M3 embedding" --rerank
+
+# 检查文档是否已存在
+python bin/brain-base-cli.py exists --url "https://docs.anthropic.com/..."
+
+# 完整问答链路（LLM 驱动，含检索+补库+自检）
+python bin/brain-base-cli.py ask "brain-base 的 search 和 ask 有什么区别？"
+
+# URL 补库（调用 get-info-agent 抓取+入库）
+python bin/brain-base-cli.py ingest-url --url "https://example.com/doc" --topic "主题"
+
+# 本地文件入库（调用 upload-agent）
+python bin/brain-base-cli.py ingest-file --path README.md
+
+# 纯文本入库（Markdown 内容直接传入，无需写临时文件）
+python bin/brain-base-cli.py ingest-text --content "# 标题\n内容..." --title "文档标题"
+
+# 固化反馈（基于 session_id 确认/拒绝/补充上一轮答案）
+python bin/brain-base-cli.py feedback --session-id <ID> --status confirmed
+```
+
+所有命令输出结构化 JSON，`--output-format` 参数默认 `stream-json`（实时可见中间状态），可切换为 `text` 或 `json`。
+
+详细命令矩阵与集成策略见 `skills/brain-base-skill/SKILL.md` 和 `md/BRAIN_BASE_EXTERNAL_CLI_IMPLEMENTATION.md`。
+
+### 底层方式：直接调用 claude -p
 
 两条并列入口（根据意图选择 agent）：
 
@@ -719,6 +753,7 @@ brain-base/
 │   ├── eval-recall.py             # recall@K、feedback、coverage、doc2query-index
 │   ├── source-priority.py         # source_priority 标注与信源冲突检测
 │   ├── doc-converter.py          # MinerU + pandoc + 原生 TXT/MD 统一转 Markdown
+│   ├── brain-base-cli.py         # 外部 Agent 统一调用 CLI（8 条命令，结构化 JSON 输出）
 │   └── scheduler-cli.py
 ├── planning/                     # 项目收敛与改造计划留存
 ├── data/                         # 已 gitignore，运行时自动创建
@@ -904,6 +939,7 @@ python bin/eval-recall.py diff data/eval/results/<old>.json data/eval/results/<n
 15. **Cross-Encoder 重排序（Agentic RAG P0）**：`multi-query-search --rerank` 启用 `bge-reranker-v2-m3` cross-encoder 对 RRF 合并后的候选结果做语义重排序；软依赖，模型不可用时静默回退到纯 RRF 排序。qa-workflow 步骤 2.5 推荐始终加 `--rerank`。
 16. **复杂问题分解（Agentic RAG P0）**：qa-workflow 步骤 1.5 识别多部/对比/因果链/方案选型四类复杂问题，自动分解为 2〜4 个独立子问题，每个子问题独立走 L0-L3 改写与检索，最后合并证据生成综合答案。简单事实性问题不分解。
 17. **答案质量自检 / Maker-Checker 循环（Agentic RAG P0）**：qa-workflow 步骤 8.5 在生成答案后、输出 recall trace 前做结构化自检，评估忠实度（faithfulness）、完整性（completeness）、一致性（consistency）三个维度；不合格则修正后重检一次，最多一轮；自检失败不阻断流程，结果写入 recall trace 的 `answer_eval` 字段。
+18. **外部 Agent 统一调用 CLI（brain-base-cli）**：`bin/brain-base-cli.py` 提供 8 条命令（`health` / `search` / `exists` / `ask` / `ingest-url` / `ingest-file` / `ingest-text` / `feedback`），所有命令输出结构化 JSON，默认 `stream-json` 实时可见中间状态；自动处理 `session_id` UUID 格式转换与 `HF_HUB_OFFLINE` 离线模型加载，外部 Agent 无需关心底层 `claude -p` 参数细节。详见 `md/BRAIN_BASE_EXTERNAL_CLI_IMPLEMENTATION.md`。
 
 当前高优先级痛点（P0/P1）已完成，P2 已完成内容哈希去重与召回评估基线。后续扩展建议按真实使用反馈排序：
 

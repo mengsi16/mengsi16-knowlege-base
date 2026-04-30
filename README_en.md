@@ -420,7 +420,41 @@ QA, Get-Info, Organize, and Upload — these four agents dispatch the following 
 
 brain-base can not only be used as a Plugin in Claude Code, but any system with Claude Code installed can invoke it via command line.
 
-### Invocation Comparison
+### Recommended: brain-base-cli (Unified External CLI)
+
+`bin/brain-base-cli.py` is the unified invocation entry point for external Agents, providing 8 commands with structured JSON output and `stream-json` real-time intermediate state visibility — no need to manually assemble `claude -p` parameters:
+
+```bash
+# Health check
+python bin/brain-base-cli.py health
+
+# Pure vector retrieval (no LLM, fast)
+python bin/brain-base-cli.py search --query "bge-m3 usage" --query "BGE-M3 embedding" --rerank
+
+# Check if document already exists
+python bin/brain-base-cli.py exists --url "https://docs.anthropic.com/..."
+
+# Full Q&A pipeline (LLM-driven, includes retrieval + supplementation + self-check)
+python bin/brain-base-cli.py ask "What is the difference between search and ask?"
+
+# URL supplementation (calls get-info-agent for scraping + ingestion)
+python bin/brain-base-cli.py ingest-url --url "https://example.com/doc" --topic "topic"
+
+# Local file ingestion (calls upload-agent)
+python bin/brain-base-cli.py ingest-file --path README.md
+
+# Plain text ingestion (Markdown content passed directly, no temp file needed)
+python bin/brain-base-cli.py ingest-text --content "# Title\nContent..." --title "Document Title"
+
+# Solidification feedback (confirm/reject/supplement previous answer by session_id)
+python bin/brain-base-cli.py feedback --session-id <ID> --status confirmed
+```
+
+All commands output structured JSON. The `--output-format` parameter defaults to `stream-json` (real-time intermediate state visible), and can be switched to `text` or `json`.
+
+For detailed command matrix and integration strategy, see `skills/brain-base-skill/SKILL.md` and `md/BRAIN_BASE_EXTERNAL_CLI_IMPLEMENTATION.md`.
+
+### Low-level: Direct claude -p Invocation
 
 Two parallel entry points (choose agent based on intent):
 
@@ -718,6 +752,7 @@ brain-base/
 │   ├── eval-recall.py             # recall@K, feedback, coverage, doc2query-index
 │   ├── source-priority.py         # source_priority annotation and source conflict detection
 │   ├── doc-converter.py          # MinerU + pandoc + native TXT/MD uniform conversion to Markdown
+│   ├── brain-base-cli.py         # Unified external Agent invocation CLI (8 commands, structured JSON output)
 │   └── scheduler-cli.py
 ├── planning/                     # Project convergence and transformation plans
 ├── data/                         # gitignored, auto-created at runtime
@@ -903,6 +938,7 @@ This repository currently completed:
 15. **Cross-Encoder Re-ranking (Agentic RAG P0)**: `multi-query-search --rerank` enables `bge-reranker-v2-m3` cross-encoder semantic re-ranking after RRF merge; soft dependency, silently falls back to pure RRF if model unavailable. qa-workflow Step 2.5 recommends always adding `--rerank`.
 16. **Complex Question Decomposition (Agentic RAG P0)**: qa-workflow Step 1.5 identifies four types of complex questions (multi-part / comparison / causal-chain / solution-selection), automatically decomposes into 2-4 independent sub-questions, each with its own L0-L3 rewriting and retrieval, then merges evidence for a comprehensive answer. Simple factual questions skip decomposition.
 17. **Answer Quality Self-Check / Maker-Checker Loop (Agentic RAG P0)**: qa-workflow Step 8.5 performs structured self-evaluation after answer generation on faithfulness / completeness / consistency; failed dimensions trigger one correction round; failure does not block the answer. Results are recorded in the recall trace `answer_eval` field.
+18. **Unified External Agent Invocation CLI (brain-base-cli)**: `bin/brain-base-cli.py` provides 8 commands (`health` / `search` / `exists` / `ask` / `ingest-url` / `ingest-file` / `ingest-text` / `feedback`), all outputting structured JSON with `stream-json` real-time intermediate state by default; auto-handles `session_id` UUID format conversion and `HF_HUB_OFFLINE` offline model loading, so external Agents don't need to worry about low-level `claude -p` parameter details. See `md/BRAIN_BASE_EXTERNAL_CLI_IMPLEMENTATION.md`.
 
 Current high-priority pain points (P0/P1) are completed; P2 content hash deduplication and recall evaluation baseline are done. Agentic RAG core features (cross-encoder re-ranking, complex question decomposition, answer quality self-check) are delivered. Recommended extension priorities based on real usage feedback:
 

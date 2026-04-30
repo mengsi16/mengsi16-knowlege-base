@@ -1,0 +1,314 @@
+- generic [ref=e1]:
+  - link [ref=e2] [cursor=pointer]: 跳到主要内容
+  - link [ref=e3] [cursor=pointer]:
+    - /url: https://support.google.com/websearch/answer/181196?hl=zh-CN
+    - text: 无障碍功能帮助
+  - link [ref=e4] [cursor=pointer]: 无障碍功能反馈
+  - dialog "继续使用 Google 搜索前须知" [active]:
+    - generic [ref=e11]:
+      - generic [ref=e13]:
+        - img "Google" [ref=e14]
+        - generic [ref=e15]:
+          - button "语言：‪简体中文‬" [ref=e17] [cursor=pointer]:
+            - generic [ref=e18]:
+              - img
+              - generic [ref=e19]: zh
+          - link "登录" [ref=e20] [cursor=pointer]
+      - generic [ref=e21]:
+        - heading "继续使用 Google 前须知" [level=1] [ref=e22]
+        - generic [ref=e23]:
+          - generic [ref=e24]:
+            - text: 我们会使用
+            - link "Cookie" [ref=e25] [cursor=pointer]:
+              - /url: https://policies.google.com/technologies/cookies?utm_source=ucbs&hl=zh-CN
+            - text: 和数据来实现以下目的：
+            - list [ref=e26]:
+              - listitem [ref=e27]: 提供和维护 Google 服务
+              - listitem [ref=e28]: 跟踪服务中断情况，并防范垃圾内容、欺诈和滥用行为
+              - listitem [ref=e29]: 衡量受众群体互动度和网站统计数据，以便了解 Google 服务的使用情况并提升这些服务的质量
+          - generic [ref=e30]:
+            - text: 如果您选择“全部接受”，我们还会使用 Cookie 和数据来实现以下目的：
+            - list [ref=e31]:
+              - listitem [ref=e32]: 开发和改进新服务
+              - listitem [ref=e33]: 投放广告和衡量广告效果
+              - listitem [ref=e34]: 根据您的设置显示个性化内容
+              - listitem [ref=e35]: 根据您的设置显示个性化广告
+            - generic [ref=e36]: 如果您选择“全部拒绝”，我们就不会使用 Cookie 来实现这些额外目的。
+          - generic [ref=e37]: 非个性化内容会受您当前在看的内容、您正进行的搜索会话中的活动、您所在的位置等因素影响。非个性化广告会受您当前在看的内容和您所在的大致位置影响。个性化内容和广告可能还会包含系统基于此浏览器中的过往活动记录（例如执行过的 Google 搜索）提供的更合乎个人需求的结果、推荐内容和定制广告。如有必要，我们也会使用 Cookie 和数据为受众定制与其年龄相符的体验。
+          - generic [ref=e38]: 选择“更多选项”可查看更多信息，包括与管理隐私设置有关的详情。您还可随时访问 g.co/privacytools。
+      - generic [ref=e39]:
+        - generic [ref=e40]:
+          - button "全部拒绝" [ref=e41] [cursor=pointer]
+          - button "全部接受" [ref=e42] [cursor=pointer]
+        - link "更多个性化设置和 Cookie 选项" [ref=e44] [cursor=pointer]:
+          - generic "更多个性化设置和 Cookie 选项" [ref=e45]: 更多选项
+      - generic [ref=e46]:
+        - link "隐私权" [ref=e47] [cursor=pointer]:
+          - /url: https://policies.google.com/privacy?hl=zh-CN&fg=1&utm_source=ucbs
+        - generic [ref=e48]: ·
+        - link "条款" [ref=e49] [cursor=pointer]:
+          - /url: https://policies.google.com/terms?hl=zh-CN&fg=1&utm_source=ucbs
+  - generic [ref=e54]:
+    - search [ref=e55]:
+      - generic [ref=e58]:
+        - link [ref=e59] [cursor=pointer]:
+          - /url: https://www.google.com/webhp?hl=zh-CN&ictx=0&sa=X&ved=0ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQpYkNCGw
+        - generic [ref=e60]:
+          - combobox [ref=e63]: claude code overview site:docs.anthropic.com claude code overview site:docs.anthropic.com
+          - generic [ref=e64]:
+            - button [ref=e66] [cursor=pointer]:
+              - img [ref=e68]
+            - generic [ref=e71]:
+              - button [ref=e72] [cursor=pointer]:
+                - img [ref=e73]
+              - button [ref=e75] [cursor=pointer]:
+                - img [ref=e76]
+        - button [ref=e78] [cursor=pointer]:
+          - img [ref=e81]
+    - generic [ref=e83]:
+      - button [ref=e85] [cursor=pointer]
+      - generic [ref=e86]:
+        - button [ref=e88] [cursor=pointer]:
+          - img [ref=e89]
+        - link [ref=e93] [cursor=pointer]:
+          - /url: https://accounts.google.com/ServiceLogin?hl=zh-CN&passive=true&continue=https://www.google.com/search%3Fq%3Dclaude%2Bcode%2Boverview%2Bsite:docs.anthropic.com%26sei%3DYznyaZnCCeqBi-gPrc-3-Aw&ec=futura_srp_og_si_72236_p
+          - text: 登录
+  - generic [ref=e95]:
+    - navigation [ref=e101]:
+      - list [ref=e104]:
+        - listitem [ref=e105]:
+          - link [disabled] [ref=e106]:
+            - generic [ref=e108]: 全部
+        - listitem [ref=e109]:
+          - link [ref=e110] [cursor=pointer]:
+            - /url: /search?sca_esv=fec7a8aac00c39eb&udm=7&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVmuVjtSOGTq3fLDGUek6XGKo13LUUyhoDbwTfe2m14a-VPHKS3ZpT4yDu1luHqdAItLeKzTMC66uk7QCKw638PIyqb8aXrY5ELQAI5jLdAK9gfK5yK4WOSvSa2PCXWkNo7ucVUip1MBLohqiNgFxAPpx2uGqvyw783VR6vrIosaCQG0aM&q=claude+code+overview+site:docs.anthropic.com&sa=X&ved=2ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQtKgLegQIDxAB
+            - generic [ref=e112]: 视频
+        - listitem [ref=e113]:
+          - link [ref=e114] [cursor=pointer]:
+            - /url: /search?sca_esv=fec7a8aac00c39eb&udm=2&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVmuVjtSOGTq3fLDGUek6XGKo13LUUyhoDbwTfe2m14a-VPHKS3ZpT4yDu1luHqdAItLeKzTMC66uk7QCKw638PIyqb8aXrY5ELQAI5jLdAK9gfK5yK4WOSvSa2PCXWkNo7ucVUip1MBLohqiNgFxAPpx2uGqvyw783VR6vrIosaCQG0aM&q=claude+code+overview+site:docs.anthropic.com&sa=X&ved=2ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQtKgLegQIEBAB
+            - generic [ref=e116]: 图片
+        - listitem [ref=e117]:
+          - link [ref=e118] [cursor=pointer]:
+            - /url: /search?sca_esv=fec7a8aac00c39eb&udm=39&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVmuVjtSOGTq3fLDGUek6XGKo13LUUyhoDbwTfe2m14a-VPHKS3ZpT4yDu1luHqdAItLeKzTMC66uk7QCKw638PIyqb8aXrY5ELQAI5jLdAK9gfK5yK4WOSvSa2PCXWkNo7ucVUip1MBLohqiNgFxAPpx2uGqvyw783VR6vrIosaCQG0aM&q=claude+code+overview+site:docs.anthropic.com&sa=X&ved=2ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQs6gLegQIERAB
+            - generic [ref=e120]: 短视频
+        - listitem [ref=e121]:
+          - link [ref=e122] [cursor=pointer]:
+            - /url: /search?sca_esv=fec7a8aac00c39eb&q=claude+code+overview+site:docs.anthropic.com&tbm=nws&source=lnms&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVmuVjtSOGTq3fLDGUek6XGKo13LUUyhoDbwTfe2m14a-VPHKS3ZpT4yDu1luHqdAItLeKzTMC66uk7QCKw638PIyqb8aXrY5ELQAI5jLdAK9gfK5yK4WOSvSa2PCXWkNo7ucVUip1MBLohqiNgFxAPpx2uGqvyw783VR6vrIosaCQG0aM&sa=X&ved=2ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQ0pQJegQIEhAB
+            - generic [ref=e124]: 新闻
+        - listitem [ref=e125]:
+          - link [ref=e126] [cursor=pointer]:
+            - /url: /search?sca_esv=fec7a8aac00c39eb&udm=web&fbs=ADc_l-Z6XGGbkKmpylZqg2J7ZOuVmuVjtSOGTq3fLDGUek6XGKo13LUUyhoDbwTfe2m14a-VPHKS3ZpT4yDu1luHqdAItLeKzTMC66uk7QCKw638PIyqb8aXrY5ELQAI5jLdAK9gfK5yK4WOSvSa2PCXWkNo7ucVUip1MBLohqiNgFxAPpx2uGqvyw783VR6vrIosaCQG0aM&q=claude+code+overview+site:docs.anthropic.com&sa=X&ved=2ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQs6gLegQIExAB
+            - generic [ref=e128]: 网页
+        - listitem [ref=e129]:
+          - button [ref=e130] [cursor=pointer]:
+            - generic [ref=e132]:
+              - generic [ref=e133]: 更多
+              - img [ref=e135]
+    - heading [level=1] [ref=e137]: 搜索结果
+    - main [ref=e143]:
+      - generic [ref=e147]:
+        - generic [ref=e150]:
+          - heading [level=2] [ref=e151]: Web results
+          - generic [ref=e152]:
+            - generic [ref=e155]:
+              - link [ref=e157] [cursor=pointer]:
+                - /url: https://docs.anthropic.com/en/docs/claude-code/overview
+                - heading [level=3] [ref=e158]: Claude Code overview - Claude Code Docs
+                - generic [ref=e163]:
+                  - generic [ref=e165]: anthropic.com
+                  - generic [ref=e167]: https://docs.anthropic.com › docs › overview
+              - generic [ref=e168]:
+                - generic [ref=e169]: ·
+                - link [ref=e170] [cursor=pointer]:
+                  - /url: https://translate.google.com/translate?u=https://docs.anthropic.com/en/docs/claude-code/overview&hl=zh-CN&sl=en&tl=zh-CN&client=search
+                  - text: 翻译此页
+              - button [ref=e171] [cursor=pointer]:
+                - img [ref=e174]
+            - generic [ref=e178]:
+              - emphasis [ref=e179]: Claude Code
+              - text: is an AI-powered coding assistant that helps you build features, fix bugs, and automate development tasks. It understands your entire codebase and ...
+        - generic [ref=e183]:
+          - generic [ref=e186]:
+            - link [ref=e188] [cursor=pointer]:
+              - /url: https://docs.anthropic.com/en/docs/welcome
+              - heading [level=3] [ref=e189]: Intro to Claude - Claude API Docs
+              - generic [ref=e194]:
+                - generic [ref=e196]: anthropic.com
+                - generic [ref=e198]: https://docs.anthropic.com › docs
+            - generic [ref=e199]:
+              - generic [ref=e200]: ·
+              - link [ref=e201] [cursor=pointer]:
+                - /url: https://translate.google.com/translate?u=https://docs.anthropic.com/en/docs/welcome&hl=zh-CN&sl=en&tl=zh-CN&client=search
+                - text: 翻译此页
+            - button [ref=e202] [cursor=pointer]:
+              - img [ref=e205]
+          - generic [ref=e209]:
+            - emphasis [ref=e210]: Claude is a highly performant, trustworthy, and intelligent AI platform
+            - text: built by Anthropic. Claude excels at tasks involving language, reasoning, analysis, ...
+        - generic [ref=e214]:
+          - generic [ref=e217]:
+            - link [ref=e219] [cursor=pointer]:
+              - /url: https://docs.anthropic.com/en/docs/about-claude/models
+              - heading [level=3] [ref=e220]: Models overview - Claude API Docs
+              - generic [ref=e225]:
+                - generic [ref=e227]: anthropic.com
+                - generic [ref=e229]: https://docs.anthropic.com › about-claude
+            - generic [ref=e230]:
+              - generic [ref=e231]: ·
+              - link [ref=e232] [cursor=pointer]:
+                - /url: https://translate.google.com/translate?u=https://docs.anthropic.com/en/docs/about-claude/models&hl=zh-CN&sl=en&tl=zh-CN&client=search
+                - text: 翻译此页
+            - button [ref=e233] [cursor=pointer]:
+              - img [ref=e236]
+          - generic [ref=e240]:
+            - emphasis [ref=e241]: Claude is a family of state-of-the-art large language models
+            - text: developed by Anthropic. This guide introduces the available models and compares their performance.
+        - generic [ref=e245]:
+          - generic [ref=e248]:
+            - link [ref=e250] [cursor=pointer]:
+              - /url: https://docs.anthropic.com/
+              - heading [level=3] [ref=e251]: Documentation - Claude API Docs
+              - generic [ref=e256]:
+                - generic [ref=e258]: anthropic.com
+                - generic [ref=e260]: https://docs.anthropic.com
+            - generic [ref=e261]:
+              - generic [ref=e262]: ·
+              - link [ref=e263] [cursor=pointer]:
+                - /url: https://translate.google.com/translate?u=https://docs.anthropic.com/&hl=zh-CN&sl=en&tl=zh-CN&client=search
+                - text: 翻译此页
+            - button [ref=e264] [cursor=pointer]:
+              - img [ref=e267]
+          - generic [ref=e271]:
+            - emphasis [ref=e272]: Start building with Claude
+            - text: . Everything you need to integrate Claude into your applications. From first API call to production. What do you want to build?
+        - generic [ref=e276]:
+          - generic [ref=e279]:
+            - link [ref=e281] [cursor=pointer]:
+              - /url: https://docs.anthropic.com/en/docs/claude-code/ide-integrations
+              - heading [level=3] [ref=e282]: Use Claude Code in VS Code - Claude Code Docs
+              - generic [ref=e287]:
+                - generic [ref=e289]: anthropic.com
+                - generic [ref=e291]: https://docs.anthropic.com › ide-integrations
+            - generic [ref=e292]:
+              - generic [ref=e293]: ·
+              - link [ref=e294] [cursor=pointer]:
+                - /url: https://translate.google.com/translate?u=https://docs.anthropic.com/en/docs/claude-code/ide-integrations&hl=zh-CN&sl=en&tl=zh-CN&client=search
+                - text: 翻译此页
+            - button [ref=e295] [cursor=pointer]:
+              - img [ref=e298]
+          - generic [ref=e302]:
+            - text: Install and configure the Claude Code extension for VS Code.
+            - emphasis [ref=e303]: Get AI coding assistance
+            - text: with inline diffs, @-mentions, plan review, and keyboard shortcuts.
+        - generic [ref=e307]:
+          - generic [ref=e310]:
+            - link [ref=e312] [cursor=pointer]:
+              - /url: https://docs.anthropic.com/ja/api/getting-started
+              - heading [level=3] [ref=e313]: API Overview - Claude API Docs
+              - generic [ref=e318]:
+                - generic [ref=e320]: anthropic.com
+                - generic [ref=e322]: https://docs.anthropic.com › getting-started
+            - generic [ref=e323]:
+              - generic [ref=e324]: ·
+              - link [ref=e325] [cursor=pointer]:
+                - /url: https://translate.google.com/translate?u=https://docs.anthropic.com/ja/api/getting-started&hl=zh-CN&sl=en&tl=zh-CN&client=search
+                - text: 翻译此页
+            - button [ref=e326] [cursor=pointer]:
+              - img [ref=e329]
+          - generic [ref=e333]:
+            - text: API Overview ... The Claude API is a RESTful API at https://api.anthropic.com that
+            - emphasis [ref=e334]: provides programmatic access to Claude models and Claude Managed Agents
+            - text: .
+        - generic [ref=e338]:
+          - generic [ref=e341]:
+            - link [ref=e343] [cursor=pointer]:
+              - /url: https://docs.anthropic.com/en/docs/claude-code/skills
+              - heading [level=3] [ref=e344]: Extend Claude with skills - Claude Code Docs
+              - generic [ref=e349]:
+                - generic [ref=e351]: anthropic.com
+                - generic [ref=e353]: https://docs.anthropic.com › docs › skills
+            - generic [ref=e354]:
+              - generic [ref=e355]: ·
+              - link [ref=e356] [cursor=pointer]:
+                - /url: https://translate.google.com/translate?u=https://docs.anthropic.com/en/docs/claude-code/skills&hl=zh-CN&sl=en&tl=zh-CN&client=search
+                - text: 翻译此页
+            - button [ref=e357] [cursor=pointer]:
+              - img [ref=e360]
+          - generic [ref=e364]:
+            - emphasis [ref=e365]: Create, manage, and share skills
+            - text: to extend Claude's capabilities in Claude Code. Includes custom commands and bundled skills.
+        - generic [ref=e369]:
+          - generic [ref=e372]:
+            - link [ref=e374] [cursor=pointer]:
+              - /url: https://docs.anthropic.com/en/docs/about-claude/pricing
+              - heading [level=3] [ref=e375]: Pricing - Claude API Docs
+              - generic [ref=e380]:
+                - generic [ref=e382]: anthropic.com
+                - generic [ref=e384]: https://docs.anthropic.com › about-claude
+            - generic [ref=e385]:
+              - generic [ref=e386]: ·
+              - link [ref=e387] [cursor=pointer]:
+                - /url: https://translate.google.com/translate?u=https://docs.anthropic.com/en/docs/about-claude/pricing&hl=zh-CN&sl=en&tl=zh-CN&client=search
+                - text: 翻译此页
+            - button [ref=e388] [cursor=pointer]:
+              - img [ref=e391]
+          - generic [ref=e394]: A cache hit costs 10% of the standard input price, which means caching pays off after just one cache read for the 5-minute duration (1.25x write), or after two ...
+        - generic [ref=e398]:
+          - generic [ref=e401]:
+            - link [ref=e403] [cursor=pointer]:
+              - /url: https://docs.anthropic.com/en/docs/claude-code/setup
+              - heading [level=3] [ref=e404]: Advanced setup - Claude Code Docs
+              - generic [ref=e409]:
+                - generic [ref=e411]: anthropic.com
+                - generic [ref=e413]: https://docs.anthropic.com › docs › setup
+            - generic [ref=e414]:
+              - generic [ref=e415]: ·
+              - link [ref=e416] [cursor=pointer]:
+                - /url: https://translate.google.com/translate?u=https://docs.anthropic.com/en/docs/claude-code/setup&hl=zh-CN&sl=en&tl=zh-CN&client=search
+                - text: 翻译此页
+            - button [ref=e417] [cursor=pointer]:
+              - img [ref=e420]
+          - generic [ref=e424]:
+            - text: System requirements.
+            - emphasis [ref=e425]: Claude Code runs on the following platforms and configurations
+            - text: ": Operating system: macOS 13.0+; Windows 10 1809+ or Windows Server 2019+ ..."
+        - generic [ref=e429]:
+          - generic [ref=e432]:
+            - link [ref=e434] [cursor=pointer]:
+              - /url: https://docs.anthropic.com/claude/docs/ask-claude-for-rewrites
+              - heading [level=3] [ref=e435]: Prompt engineering overview - Claude API Docs
+              - generic [ref=e440]:
+                - generic [ref=e442]: anthropic.com
+                - generic [ref=e444]: https://docs.anthropic.com › claude › docs
+            - generic [ref=e445]:
+              - generic [ref=e446]: ·
+              - link [ref=e447] [cursor=pointer]:
+                - /url: https://translate.google.com/translate?u=https://docs.anthropic.com/claude/docs/ask-claude-for-rewrites&hl=zh-CN&sl=en&tl=zh-CN&client=search
+                - text: 翻译此页
+            - button [ref=e448] [cursor=pointer]:
+              - img [ref=e451]
+          - generic [ref=e455]:
+            - text: The Claude Console also offers
+            - emphasis [ref=e456]: prompting tools
+            - text: —prompt generator, templates and variables, and prompt improver—to help you build and refine prompts quickly.
+      - navigation [ref=e459]:
+        - heading [level=1] [ref=e460]: 网页导航
+        - text: "1"
+        - link [ref=e463] [cursor=pointer]:
+          - /url: /search?q=claude+code+overview+site:docs.anthropic.com&sca_esv=fec7a8aac00c39eb&ei=YznyabeTK5fJi-gP2OmzgA4&start=10&sa=N&sstk=Af77f_fIlHXsPEHse-zd6DFvRWwgJHq3pn20JOW82s1Gnppnza6w9xEMuQS2eiCAnhJ5Sjb4WcxNBmHDZNfHdaHDnifhzq_aypfFQQ&ved=2ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQ8tMDegQIOxAE
+          - text: "2"
+        - link [ref=e465] [cursor=pointer]:
+          - /url: /search?q=claude+code+overview+site:docs.anthropic.com&sca_esv=fec7a8aac00c39eb&ei=YznyabeTK5fJi-gP2OmzgA4&start=20&sa=N&sstk=Af77f_fIlHXsPEHse-zd6DFvRWwgJHq3pn20JOW82s1Gnppnza6w9xEMuQS2eiCAnhJ5Sjb4WcxNBmHDZNfHdaHDnifhzq_aypfFQQ&ved=2ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQ8tMDegQIOxAG
+          - text: "3"
+        - link [ref=e467] [cursor=pointer]:
+          - /url: /search?q=claude+code+overview+site:docs.anthropic.com&sca_esv=fec7a8aac00c39eb&ei=YznyabeTK5fJi-gP2OmzgA4&start=30&sa=N&sstk=Af77f_fIlHXsPEHse-zd6DFvRWwgJHq3pn20JOW82s1Gnppnza6w9xEMuQS2eiCAnhJ5Sjb4WcxNBmHDZNfHdaHDnifhzq_aypfFQQ&ved=2ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQ8tMDegQIOxAI
+          - text: "4"
+        - link [ref=e469] [cursor=pointer]:
+          - /url: /search?q=claude+code+overview+site:docs.anthropic.com&sca_esv=fec7a8aac00c39eb&ei=YznyabeTK5fJi-gP2OmzgA4&start=40&sa=N&sstk=Af77f_fIlHXsPEHse-zd6DFvRWwgJHq3pn20JOW82s1Gnppnza6w9xEMuQS2eiCAnhJ5Sjb4WcxNBmHDZNfHdaHDnifhzq_aypfFQQ&ved=2ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQ8tMDegQIOxAK
+          - text: "5"
+        - heading [level=2] [ref=e471]:
+          - link [ref=e472] [cursor=pointer]:
+            - /url: /search?q=claude+code+overview+site:docs.anthropic.com&sca_esv=fec7a8aac00c39eb&ei=YznyabeTK5fJi-gP2OmzgA4&start=10&sa=N&sstk=Af77f_fIlHXsPEHse-zd6DFvRWwgJHq3pn20JOW82s1Gnppnza6w9xEMuQS2eiCAnhJ5Sjb4WcxNBmHDZNfHdaHDnifhzq_aypfFQQ&ved=2ahUKEwj30MbhxJOUAxWX5AIHHdj0DOAQ8NMDegQIOxAM
+            - generic [ref=e474]: 下一页
+    - contentinfo [ref=e475]:
+      - heading [level=1] [ref=e476]: 页脚链接
