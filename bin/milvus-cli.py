@@ -779,6 +779,72 @@ def text_search(query: str, top_k: int) -> list[dict[str, Any]]:
     )
 
 
+def delete_by_doc_ids(
+    doc_ids: list[str],
+    confirm: bool,
+) -> dict[str, Any]:
+    """Delete every Milvus row whose ``doc_id`` is in ``doc_ids``.
+
+    Used by lifecycle-agent's remove-doc workflow.  Refuses to run unless
+    ``confirm=True`` so accidental invocations cannot wipe rows.
+
+    Returns a per-doc breakdown so the caller can audit what was actually
+    deleted; missing collection / no rows is reported, not raised.
+    """
+    if not doc_ids:
+        raise ValueError("delete-by-doc-ids 需要至少一个 doc_id")
+    if not confirm:
+        raise ValueError(
+            "delete-by-doc-ids 是破坏性操作。请显式加 --confirm 才会真正删除。"
+        )
+    settings = load_runtime_settings()
+    connections.connect(
+        alias="default",
+        uri=settings["milvus_uri"],
+        token=settings["milvus_token"],
+        db_name=settings["milvus_db"],
+    )
+    collection_name = settings["milvus_collection"]
+    if not utility.has_collection(collection_name):
+        return {
+            "milvus_uri": settings["milvus_uri"],
+            "collection": collection_name,
+            "collection_existed": False,
+            "doc_ids": doc_ids,
+            "rows_deleted": 0,
+            "per_doc": [],
+        }
+    collection = Collection(collection_name)
+    collection.load()
+
+    per_doc: list[dict[str, Any]] = []
+    total_deleted = 0
+    for doc_id in doc_ids:
+        # Count first so we can report exactly how many rows the doc had.
+        expr = f'doc_id == "{doc_id}"'
+        try:
+            existing = collection.query(expr=expr, output_fields=["doc_id"], limit=16384)
+            row_count = len(existing)
+        except Exception as exc:
+            per_doc.append({"doc_id": doc_id, "rows_deleted": 0, "error": str(exc)})
+            continue
+        if row_count == 0:
+            per_doc.append({"doc_id": doc_id, "rows_deleted": 0, "note": "no rows in milvus"})
+            continue
+        collection.delete(expr=expr)
+        per_doc.append({"doc_id": doc_id, "rows_deleted": row_count})
+        total_deleted += row_count
+    collection.flush()
+    return {
+        "milvus_uri": settings["milvus_uri"],
+        "collection": collection_name,
+        "collection_existed": True,
+        "doc_ids": doc_ids,
+        "rows_deleted": total_deleted,
+        "per_doc": per_doc,
+    }
+
+
 def drop_collection(confirm: bool) -> dict[str, Any]:
     """Drop the configured Milvus collection. Used when switching embedding provider.
 
@@ -1561,6 +1627,23 @@ def main() -> None:
         help="必须显式加上才会真正删除；无该参数时只会报错，不删数据",
     )
 
+    delete_docs_parser = subparsers.add_parser(
+        "delete-by-doc-ids",
+        help="(危险) 按 doc_id 删除 Milvus 行；供 lifecycle-agent 的 remove-doc 流程调用",
+    )
+    delete_docs_parser.add_argument(
+        "--doc-id",
+        action="append",
+        dest="doc_ids",
+        required=True,
+        help="要删除的 doc_id；可重复多次",
+    )
+    delete_docs_parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="必须显式加上才会真正删除；无该参数时只会报错，不删数据",
+    )
+
     multi_parser = subparsers.add_parser(
         "multi-query-search",
         help="对多条查询并发执行检索，按 RRF 合并并按 chunk_id 去重",
@@ -1715,6 +1798,14 @@ def main() -> None:
 
     if args.command == "drop-collection":
         result = drop_collection(confirm=bool(args.confirm))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "delete-by-doc-ids":
+        result = delete_by_doc_ids(
+            doc_ids=args.doc_ids,
+            confirm=bool(args.confirm),
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 

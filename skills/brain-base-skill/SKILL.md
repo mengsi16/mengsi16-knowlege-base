@@ -58,6 +58,9 @@ python bin/brain-base-cli.py <command> [options]
 | 本地文件入库 | `ingest-file` | 是（`upload-agent`） | PDF / DOCX / MD / TXT / 代码文件入库 |
 | 文本直入库 | `ingest-text` | 是（经临时 `.md` 转 `upload-agent`） | 上层 Agent 已拿到 Markdown / README 正文，不想先自己落盘 |
 | 固化反馈 | `feedback` | 是（`qa-agent` resume） | 对上一轮 `ask` 结果发送 `confirmed/rejected/supplement` |
+| 多轮续聊 | `resume` | 是（`qa-agent --resume`） | 基于同一 session_id 继续对话，复用上下文 |
+| 会话历史 | `history` | 否（纯文件读取） | 列出最近会话 / 回放指定 session 事件流 |
+| 删除文档 | `remove-doc` | 是（`lifecycle-agent`） | 跨存储层一致性删除（dry-run + confirm 两阶段） |
 
 ### 2.2 最核心的调用选择
 
@@ -70,6 +73,9 @@ python bin/brain-base-cli.py <command> [options]
 | 一段 Markdown / README 正文 | 写入知识库 | `ingest-text` |
 | 一个 URL / doc_id / sha256 | 先判断是否已入库 | `exists` |
 | 上一轮 ask 的 `session_id` | 确认/拒绝/补充固化 | `feedback` |
+| 上一轮 ask 的 `session_id` + 续问 | 继续对话 | `resume` |
+| 想看历史对话 | 列出/回放会话 | `history` |
+| 一个 doc_id 要删除 | 清理过期/重复文档 | `remove-doc` |
 
 ## 3. 命令详解
 
@@ -187,7 +193,48 @@ python bin/brain-base-cli.py ingest-text \
 2. 这类内容默认按 `user-upload` 路径处理
 3. 如果你要保持网页来源语义，应优先使用 `ingest-url`
 
-### 3.8 `feedback`
+### 3.8 `resume`
+
+用途：基于同一 session_id 继续对话，复用 qa-agent 上下文。
+```bash
+python bin/brain-base-cli.py resume --session-id <ID> "继续刚才的话题"
+```
+特点：
+1. 底层走 `claude --resume <session_id>`
+2. 事件自动追加到 `data/conversations/<session_id>.jsonl`
+3. 适合 Agent Loop 需要多轮追问的场景
+
+### 3.9 `history`
+
+用途：查看会话历史。
+```bash
+# 列出最近会话
+python bin/brain-base-cli.py history
+
+# 回放指定 session
+python bin/brain-base-cli.py history --session-id <ID>
+```
+特点：
+1. 纯文件读取，不触发 LLM
+2. 返回 session 列表或指定 session 的事件流
+3. 适合 Agent Loop 做上下文回溯
+
+### 3.10 `remove-doc`
+
+用途：跨存储层一致性删除文档。
+```bash
+# dry-run：只输出删除清单
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --reason "过期文档"
+
+# confirm：执行删除
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --confirm --reason "确认删除"
+```
+特点：
+1. 默认 dry-run，需 `--confirm` 才真删
+2. 编排 lifecycle-workflow：Milvus 行 → raw/chunks/uploads 文件 → doc2query-index → crystallized index 标记 rejected → 审计日志
+3. 适合 Agent Loop 定期清理过期/重复文档
+
+### 3.11 `feedback`
 
 用途：对上一轮 `ask` 发送固化反馈。
 ```bash
@@ -225,6 +272,14 @@ python bin/brain-base-cli.py feedback \
   2. URL → ingest-url
   3. 本地文件 → ingest-file
   4. 内存里的 Markdown/README → ingest-text
+
+要续聊：
+  1. resume --session-id <ID> "续问内容"
+  2. history 查看历史
+
+要删除文档：
+  1. remove-doc --doc-id <ID> --reason "原因"（dry-run）
+  2. remove-doc --doc-id <ID> --confirm --reason "确认"（执行）
 ```
 ### 4.2 业务场景映射
 
@@ -235,12 +290,14 @@ python bin/brain-base-cli.py feedback \
 3. 记录 `session_id`
 4. 根据用户下一轮反应发 `feedback`
 
-#### 场景 B：监控/爬虫型系统补库
+#### 场景 B：监控/爬虫型系统补库（如 github-trending-monitor）
 
 1. 先抓索引页/榜单页（业务系统自己负责）
 2. 对每个项目 URL 先 `exists --url`
 3. 不存在或需刷新 → `ingest-url`
 4. 入库后必要时 `search` 验证可检索性
+5. 过期项目 → `remove-doc --doc-id <ID> --confirm` 清理
+6. 需要对项目问答 → `ask` + `resume` 多轮对话
 
 #### 场景 C：外部 Agent 已经拿到 README 正文
 
@@ -377,8 +434,17 @@ export BRAIN_BASE_CLAUDE_BIN="claude"
        │         ├─ upload-ingest
        │         ├─ doc-converter
        │         └─ knowledge-persistence
-       └─ feedback
-            └─ qa-agent --resume <session_id>
+       ├─ feedback
+       │    └─ qa-agent --resume <session_id>
+       ├─ resume
+       │    └─ qa-agent --resume <session_id> (续聊)
+       ├─ history
+       │    └─ 读取 data/conversations/*.jsonl
+       └─ remove-doc
+            └─ lifecycle-agent
+                 ├─ lifecycle-workflow
+                 ├─ milvus-cli delete-by-doc-ids
+                 └─ 审计日志 → data/lifecycle-audit.jsonl
 ```
 ## 10. 错误处理
 

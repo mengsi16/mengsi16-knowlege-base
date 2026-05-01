@@ -64,3 +64,14 @@ ingest 失败 / 检索不对时按序检查：
 3. `python milvus-cli.py inspect-config` → `embedding_provider` 含 `kind` / `question_id`
 4. dense dim 不匹配 / 缺 sparse 字段 → `python milvus-cli.py drop-collection --confirm` 后重 ingest
 5. `expect 1 row` / `invalid input for sparse float vector` → sparse 值必须是 `dict[int, float]`
+
+## 外部调用与部署规则
+
+38. **外部调用统一走 `bin/brain-base-cli.py`**：禁止外部 Agent 直接拼装 `claude -p ... --plugin-dir ... --agent ...`，所有外部调用必须经 brain-base-cli——CLI 已封装 UUID 转换、HF 离线模式、stream-json 实时输出、会话落盘等通用逻辑，绕过会重复踩坑。
+39. **Docker 是个人/本地部署主路径**：`docker compose up -d` 一键拉起 Milvus + brain-base 容器；裸装 Python + Node 仅用于开发调试。Dockerfile 必须把 nodejs、claude code、playwright-cli、Python 依赖、bge-m3 / mineru 模型缓存全部就位。
+40. **模型缓存必须挂载持久卷**：bge-m3 ~1.4GB、MinerU ~2GB，容器重建若不挂载 `~/.cache/huggingface` 会重复下载——`docker-compose.yml` 必须把宿主机 cache 目录挂进容器。
+41. **多轮对话用 `--resume <session_id>`**：claude-code 原生支持 session 续接，禁止在 brain-base 层自建会话上下文管理；`ask` 落盘到 `data/conversations/<session_id>.jsonl`，`resume` 命令直接复用该 session_id。
+42. **会话历史是只读追加日志**：`data/conversations/*.jsonl` 每行一个事件（ask/resume/feedback），禁止改写历史行——回溯靠读 jsonl，不要再造索引数据库。
+43. **文档生命周期管理走 `lifecycle-agent`**：删除/归档/重 ingest 等破坏性操作必须通过 lifecycle-agent 编排（`brain-base-cli remove-doc` 调它），禁止任何 skill / 后端代码直接 `rm` raw 文件或 `collection.delete()` ——agent 层负责跨存储一致性（Milvus / raw / chunks / doc2query-index / crystallized 联动清理）。
+44. **organize-agent 不删原始层**：固化层（crystallized）的清理由 organize-agent 负责，原始层（raw / chunks / Milvus）的清理只能由 lifecycle-agent 负责，两者职责严格分离。
+45. **remove-doc 必须 dry-run 先行**：默认列出将删除的内容（Milvus 行数、raw / chunks 文件路径、被引用的 crystallized skill），加 `--confirm` 才真删，且不可逆。

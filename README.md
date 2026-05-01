@@ -423,7 +423,7 @@ brain-base 不仅能在 Claude Code 中作为 Plugin 使用，任何安装了 Cl
 
 ### 推荐方式：brain-base-cli（统一外部 CLI）
 
-`bin/brain-base-cli.py` 是面向外部 Agent 的统一调用入口，提供 8 条命令、结构化 JSON 输出、`stream-json` 实时中间状态可见，无需手动拼装 `claude -p` 参数：
+`bin/brain-base-cli.py` 是面向外部 Agent 的统一调用入口，提供 11 条命令、结构化 JSON 输出、`stream-json` 实时中间状态可见，无需手动拼装 `claude -p` 参数：
 
 ```bash
 # 健康检查
@@ -449,9 +449,20 @@ python bin/brain-base-cli.py ingest-text --content "# 标题\n内容..." --title
 
 # 固化反馈（基于 session_id 确认/拒绝/补充上一轮答案）
 python bin/brain-base-cli.py feedback --session-id <ID> --status confirmed
+
+# 多轮对话续聊（基于 session_id 复用上下文）
+python bin/brain-base-cli.py resume --session-id <ID> "继续刚才的话题"
+
+# 查看会话历史（不传 --session-id 列出最近会话，传则回放该 session）
+python bin/brain-base-cli.py history
+python bin/brain-base-cli.py history --session-id <ID>
+
+# 删除文档（默认 dry-run，需 --confirm 才真删，跨 Milvus/raw/chunks/index 全存储层）
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --reason "过期文档"
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --confirm --reason "确认删除"
 ```
 
-所有命令输出结构化 JSON，`--output-format` 参数默认 `stream-json`（实时可见中间状态），可切换为 `text` 或 `json`。
+所有命令输出结构化 JSON，`--output-format` 参数默认 `stream-json`（实时可见中间状态），可切换为 `text` 或 `json`。所有调用 claude-code 的命令均支持 `--model` 参数覆盖默认模型（如 `--model sonnet`）。
 
 详细命令矩阵与集成策略见 `skills/brain-base-skill/SKILL.md` 和 `md/BRAIN_BASE_EXTERNAL_CLI_IMPLEMENTATION.md`。
 
@@ -549,8 +560,18 @@ claude -p -c "用户未否定，确认固化上一轮答案" \
 
 ### 1. 启动 Milvus
 
+**方式 A：Docker 一键部署（推荐，含 Milvus + brain-base 容器）**
+
 ```bash
 docker compose up -d
+```
+
+此方式会同时启动 Milvus 三件套（etcd + minio + standalone）和 brain-base 容器（Python + Node.js + Claude Code + Playwright-cli + 所有依赖），通过 `docker compose exec brain-base python bin/brain-base-cli.py ...` 触发任务。
+
+**方式 B：仅启动 Milvus（本地开发）**
+
+```bash
+docker compose up -d etcd minio standalone
 ```
 
 验证 Milvus：
@@ -735,7 +756,8 @@ brain-base/
 │   ├── qa-agent.md
 │   ├── get-info-agent.md         # 外部补库入口
 │   ├── upload-agent.md           # 本地文档上传入口（与 get-info-agent 平行）
-│   └── organize-agent.md         # 自进化整理层调度 Agent
+│   ├── organize-agent.md         # 自进化整理层调度 Agent
+│   └── lifecycle-agent.md        # 文档生命周期管理 agent（唯一有权跨存储删除）
 ├── skills/
 │   ├── qa-workflow/
 │   ├── crystallize-workflow/     # 固化层命中判断 / 写入 / 刷新
@@ -747,13 +769,14 @@ brain-base/
 │   ├── web-research-ingest/
 │   ├── knowledge-persistence/    # 两条入口的共同下游
 │   ├── update-priority/
+│   ├── lifecycle-workflow/       # 文档生命周期删除 workflow（dry-run + confirm 两阶段）
 │   └── brain-base-skill/         # 外部 Agent 调用说明书（同时说明 qa-agent＋ upload-agent 两条入口）
 ├── bin/
 │   ├── milvus-cli.py
 │   ├── eval-recall.py             # recall@K、feedback、coverage、doc2query-index
 │   ├── source-priority.py         # source_priority 标注与信源冲突检测
 │   ├── doc-converter.py          # MinerU + pandoc + 原生 TXT/MD 统一转 Markdown
-│   ├── brain-base-cli.py         # 外部 Agent 统一调用 CLI（8 条命令，结构化 JSON 输出）
+│   ├── brain-base-cli.py         # 外部 Agent 统一调用 CLI（11 条命令，结构化 JSON 输出）
 │   └── scheduler-cli.py
 ├── planning/                     # 项目收敛与改造计划留存
 ├── data/                         # 已 gitignore，运行时自动创建
@@ -761,9 +784,11 @@ brain-base/
 │   │   ├── raw/                  # 原始层——get-info-agent / upload-agent 写，LLM 只读
 │   │   └── uploads/              # 用户上传的原始文件归档（upload-agent 写）
 │   ├── docs/chunks/              # 自进化整理层——由 knowledge-persistence 写（LLM 语义分块）
+│   ├── conversations/            # 会话落盘（ask/resume/feedback 事件流，每 session 一个 .jsonl）
 │   ├── crystallized/             # 自进化整理层——由 organize-agent 写（固化答案）
 │   │   ├── index.json            # 固化 skill 索引
 │   │   └── <skill_id>.md         # 每条固化 skill 一个文件
+│   ├── lifecycle-audit.jsonl    # 文档生命周期审计日志
 │   ├── priority.json
 │   ├── keywords.db
 │   └── eval/
@@ -939,7 +964,10 @@ python bin/eval-recall.py diff data/eval/results/<old>.json data/eval/results/<n
 15. **Cross-Encoder 重排序（Agentic RAG P0）**：`multi-query-search --rerank` 启用 `bge-reranker-v2-m3` cross-encoder 对 RRF 合并后的候选结果做语义重排序；软依赖，模型不可用时静默回退到纯 RRF 排序。qa-workflow 步骤 2.5 推荐始终加 `--rerank`。
 16. **复杂问题分解（Agentic RAG P0）**：qa-workflow 步骤 1.5 识别多部/对比/因果链/方案选型四类复杂问题，自动分解为 2〜4 个独立子问题，每个子问题独立走 L0-L3 改写与检索，最后合并证据生成综合答案。简单事实性问题不分解。
 17. **答案质量自检 / Maker-Checker 循环（Agentic RAG P0）**：qa-workflow 步骤 8.5 在生成答案后、输出 recall trace 前做结构化自检，评估忠实度（faithfulness）、完整性（completeness）、一致性（consistency）三个维度；不合格则修正后重检一次，最多一轮；自检失败不阻断流程，结果写入 recall trace 的 `answer_eval` 字段。
-18. **外部 Agent 统一调用 CLI（brain-base-cli）**：`bin/brain-base-cli.py` 提供 8 条命令（`health` / `search` / `exists` / `ask` / `ingest-url` / `ingest-file` / `ingest-text` / `feedback`），所有命令输出结构化 JSON，默认 `stream-json` 实时可见中间状态；自动处理 `session_id` UUID 格式转换与 `HF_HUB_OFFLINE` 离线模型加载，外部 Agent 无需关心底层 `claude -p` 参数细节。详见 `md/BRAIN_BASE_EXTERNAL_CLI_IMPLEMENTATION.md`。
+18. **外部 Agent 统一调用 CLI（brain-base-cli）**：`bin/brain-base-cli.py` 提供 11 条命令（`health` / `search` / `exists` / `ask` / `ingest-url` / `ingest-file` / `ingest-text` / `feedback` / `resume` / `history` / `remove-doc`），所有命令输出结构化 JSON，默认 `stream-json` 实时可见中间状态；自动处理 `session_id` UUID 格式转换与 `HF_HUB_OFFLINE` 离线模型加载；所有调用 claude-code 的命令支持 `--model` 参数覆盖默认模型。详见 `md/BRAIN_BASE_EXTERNAL_CLI_IMPLEMENTATION.md`。
+19. **会话持久化与多轮对话**：`ask` / `resume` / `feedback` 命令自动落盘到 `data/conversations/<session_id>.jsonl`；`resume` 命令基于 `claude --resume` 复用上下文实现多轮对话；`history` 命令查询最近会话列表或回放指定 session 事件流。
+20. **文档生命周期管理**：`lifecycle-agent` + `lifecycle-workflow` 编排跨存储层一致性删除（Milvus 行 → raw/chunks 文件 → doc2query-index → crystallized index 标记 rejected → 审计日志）；`remove-doc` 命令默认 dry-run 只输出清单，`--confirm` 后才执行删除；`milvus-cli.py` 新增 `delete-by-doc-ids` 子命令支持按 doc_id 删除 Milvus 行。
+21. **Docker 一键部署**：`Dockerfile` + `docker-compose.yml` 实现全栈容器化（Milvus 三件套 + brain-base 容器含 Python + Node.js + Claude Code + Playwright-cli + 所有依赖）；模型缓存持久化挂载，避免重复下载；通过 `docker compose exec brain-base python bin/brain-base-cli.py ...` 触发任务。
 
 当前高优先级痛点（P0/P1）已完成，P2 已完成内容哈希去重与召回评估基线。后续扩展建议按真实使用反馈排序：
 

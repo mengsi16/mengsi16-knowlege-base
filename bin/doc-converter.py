@@ -280,17 +280,74 @@ def check_vram_before_mineru(vram_limit_mb: int) -> None:
         )
 
 
+def _count_pdf_pages(input_path: Path) -> int:
+    """Count pages in a PDF file. Returns 0 if unable to determine."""
+    try:
+        import fitz  # PyMuPDF – lightweight, already a transitive dep
+        doc = fitz.open(str(input_path))
+        count = doc.page_count
+        doc.close()
+        return count
+    except Exception:  # noqa: BLE001
+        # Fallback: try pdfinfo from poppler-utils
+        try:
+            proc = subprocess.run(
+                ["pdfinfo", str(input_path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            for line in proc.stdout.splitlines():
+                if line.startswith("Pages:"):
+                    return int(line.split(":")[1].strip())
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
+
+
 def _run_mineru_via_python_api(
     input_path: Path,
     work_dir: Path,
     mineru_bin: str | None = None,
+    page_range: str | None = None,
 ) -> None:
     """Run MinerU via its synchronous local Python API.
 
     这样可以绕过 ``mineru`` CLI 内部的"本地 FastAPI + wait_for_task_result 轮询"封装层，
     避免出现文档已解析完成但客户端卡在结果轮询阶段、最终超时失败的问题。
+
+    ``page_range``：可选页范围（如 ``"1-10"``），仅对 PDF 有效。为 None 时处理全部页面。
     """
     python_exe = resolve_mineru_python(mineru_bin)
+
+    # Set MINERU_PROCESSING_WINDOW_SIZE to limit VRAM usage.
+    # Default 64 pages per window; reduce to env var or 10 for large docs.
+    window_size = os.environ.get("MINERU_PROCESSING_WINDOW_SIZE", "").strip()
+    env_extra: dict[str, str] = {}
+    if not window_size:
+        env_extra["MINERU_PROCESSING_WINDOW_SIZE"] = "10"
+    else:
+        env_extra["MINERU_PROCESSING_WINDOW_SIZE"] = window_size
+
+    do_parse_args = [
+        "    output_dir=str(output_dir),",
+        "    pdf_file_names=[input_path.stem],",
+        "    pdf_bytes_list=[input_path.read_bytes()],",
+        "    p_lang_list=['ch'],",
+        "    backend='hybrid-auto-engine',",
+        "    parse_method='auto',",
+        "    formula_enable=True,",
+        "    table_enable=True,",
+        "    f_draw_layout_bbox=False,",
+        "    f_draw_span_bbox=False,",
+        "    f_dump_md=True,",
+        "    f_dump_middle_json=True,",
+        "    f_dump_model_output=True,",
+        "    f_dump_orig_pdf=True,",
+        "    f_dump_content_list=True,",
+    ]
+    if page_range is not None:
+        do_parse_args.append(f"    page_range='{page_range}',")
+    do_parse_args.append(")")
+
     script = "\n".join(
         [
             "from pathlib import Path",
@@ -299,27 +356,15 @@ def _run_mineru_via_python_api(
             "input_path = Path(sys.argv[1])",
             "output_dir = Path(sys.argv[2])",
             "do_parse(",
-            "    output_dir=str(output_dir),",
-            "    pdf_file_names=[input_path.stem],",
-            "    pdf_bytes_list=[input_path.read_bytes()],",
-            "    p_lang_list=['ch'],",
-            "    backend='hybrid-auto-engine',",
-            "    parse_method='auto',",
-            "    formula_enable=True,",
-            "    table_enable=True,",
-            "    f_draw_layout_bbox=False,",
-            "    f_draw_span_bbox=False,",
-            "    f_dump_md=True,",
-            "    f_dump_middle_json=True,",
-            "    f_dump_model_output=True,",
-            "    f_dump_orig_pdf=True,",
-            "    f_dump_content_list=True,",
-            ")",
+            *do_parse_args,
         ]
     )
     cmd = [python_exe, "-c", script, str(input_path), str(work_dir)]
     try:
-        proc = subprocess.run(cmd, check=False)
+        proc = subprocess.run(
+            cmd, check=False,
+            env={**os.environ, **env_extra},
+        )
     except FileNotFoundError as exc:
         raise RuntimeError(
             f"未找到可用的 MinerU Python 解释器：{python_exe}。"
@@ -330,6 +375,61 @@ def _run_mineru_via_python_api(
             f"MinerU 本地 Python API 转换失败 (exit={proc.returncode})。"
             " 具体错误请查看上方终端输出（stderr 已直通）。"
         )
+
+
+def _merge_batch_markdowns(batch_dirs: list[Path], final_work_dir: Path, stem: str) -> Path:
+    """Merge markdown outputs from batched MinerU runs into a single file.
+
+    Each batch produces its own ``<stem>.md`` and ``images/`` directory.
+    This function concatenates all markdown bodies and consolidates images
+    into the final work directory.
+    """
+    parts: list[str] = []
+    images_dst = final_work_dir / "images"
+    images_dst.mkdir(parents=True, exist_ok=True)
+    img_idx = 0
+
+    for batch_dir in batch_dirs:
+        md_path = _find_mineru_output(batch_dir, stem)
+        if md_path is None:
+            continue
+        body = md_path.read_text(encoding="utf-8")
+
+        # Rename images to avoid collisions across batches
+        batch_images = batch_dir / "images"
+        if batch_images.is_dir():
+            for img_file in sorted(batch_images.iterdir()):
+                if not img_file.is_file():
+                    continue
+                new_name = f"batch{img_idx}_{img_file.name}"
+                shutil.copy2(img_file, images_dst / new_name)
+                # Rewrite image references in body
+                body = body.replace(
+                    f"images/{img_file.name}",
+                    f"images/{new_name}",
+                )
+        img_idx += 1
+        parts.append(body)
+
+    final_md = final_work_dir / f"{stem}.md"
+    final_md.write_text("\n\n".join(parts), encoding="utf-8")
+    return final_md
+
+
+# Default page batch size for large PDFs.
+# PDFs with more pages than this will be split into batches.
+_DEFAULT_PAGE_BATCH_SIZE = 10
+
+
+def _resolve_page_batch_size() -> int:
+    """Resolve page batch size from env or default."""
+    env_val = os.environ.get("KB_MINERU_PAGE_BATCH_SIZE", "").strip()
+    if env_val:
+        try:
+            return int(env_val)
+        except ValueError:
+            pass
+    return _DEFAULT_PAGE_BATCH_SIZE
 
 
 def convert_via_mineru(
@@ -348,16 +448,76 @@ def convert_via_mineru(
     原因是用户实测存在"解析已完成但卡在 wait_for_task_result，最终超时"的上游 bug；
     直接调用本地 API 可以绕过这一层。
 
-    **显存保护**：启动前检查 GPU 空闲 VRAM ≥ *vram_limit_mb*（默认 14 GB），
-    不够则 fail-fast，避免 OOM 崩溃后残留半成品。
+    **显存保护**：
+    1. 启动前检查 GPU 空闲 VRAM ≥ *vram_limit_mb*（默认 14 GB），不够则 fail-fast。
+    2. 对 PDF 自动按页分批处理：超过 ``KB_MINERU_PAGE_BATCH_SIZE``（默认 10）页的 PDF
+       会被拆分成多个批次，每批单独调用 MinerU，最后合并结果。
+       这避免了 MinerU 一次性处理所有页面导致显存溢出。
+    3. 设置 ``MINERU_PROCESSING_WINDOW_SIZE=10``（默认），控制 MinerU 内部滑动窗口大小。
     """
     limit = resolve_vram_limit_mb(vram_limit_mb)
     check_vram_before_mineru(limit)
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    _run_mineru_via_python_api(input_path, work_dir, mineru_bin=mineru_bin)
 
+    # For PDFs, check page count and batch if needed
+    is_pdf = input_path.suffix.lower() == ".pdf"
+    if is_pdf:
+        page_count = _count_pdf_pages(input_path)
+        batch_size = _resolve_page_batch_size()
+        if page_count > batch_size and page_count > 0:
+            print(
+                f"  PDF 共 {page_count} 页，按每批 {batch_size} 页分批处理（防止显存溢出）",
+                file=sys.stderr,
+            )
+            return _convert_pdf_in_batches(
+                input_path, work_dir, page_count, batch_size, mineru_bin=mineru_bin,
+            )
+
+    # Small PDF or non-PDF: process in one go
+    _run_mineru_via_python_api(input_path, work_dir, mineru_bin=mineru_bin)
     md_path = _find_mineru_output(work_dir, input_path.stem)
+    return md_path.read_text(encoding="utf-8"), md_path
+
+
+def _convert_pdf_in_batches(
+    input_path: Path,
+    work_dir: Path,
+    page_count: int,
+    batch_size: int,
+    mineru_bin: str | None = None,
+) -> tuple[str, Path]:
+    """Convert a large PDF in page-range batches, then merge results."""
+    batch_dirs: list[Path] = []
+
+    for start_page in range(1, page_count + 1, batch_size):
+        end_page = min(start_page + batch_size - 1, page_count)
+        page_range = f"{start_page}-{end_page}"
+        batch_idx = len(batch_dirs)
+        batch_work = work_dir / f"_batch_{batch_idx:03d}_p{start_page}-{end_page}"
+        batch_work.mkdir(parents=True, exist_ok=True)
+
+        print(
+            f"  批次 {batch_idx + 1}: 第 {start_page}-{end_page} 页 / 共 {page_count} 页",
+            file=sys.stderr,
+        )
+
+        _run_mineru_via_python_api(
+            input_path, batch_work, mineru_bin=mineru_bin, page_range=page_range,
+        )
+        batch_dirs.append(batch_work)
+
+        # Wait between batches for GPU memory to be fully released
+        if end_page < page_count:
+            _time.sleep(3)
+
+    # Merge all batch outputs into final work_dir
+    md_path = _merge_batch_markdowns(batch_dirs, work_dir, input_path.stem)
+
+    # Clean up batch subdirectories
+    for bd in batch_dirs:
+        shutil.rmtree(bd, ignore_errors=True)
+
     return md_path.read_text(encoding="utf-8"), md_path
 
 

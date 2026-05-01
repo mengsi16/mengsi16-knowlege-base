@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import importlib.util
 import json
 import os
@@ -16,6 +17,7 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 BIN_DIR = ROOT_DIR / "bin"
+CONVERSATIONS_DIR = ROOT_DIR / "data" / "conversations"
 DEFAULT_CLAUDE_BIN = os.environ.get("BRAIN_BASE_CLAUDE_BIN", "claude").strip() or "claude"
 
 # Force HuggingFace Hub offline mode so bge-m3 loads from local cache only.
@@ -44,6 +46,38 @@ def _ensure_uuid(value: str | None) -> str:
         return value
     except ValueError:
         return str(uuid.uuid5(_UUID_NAMESPACE, value))
+
+
+def _now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
+def _conversation_path(session_id: str) -> Path:
+    CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    return CONVERSATIONS_DIR / f"{session_id}.jsonl"
+
+
+def _append_conversation_event(session_id: str, event: dict[str, Any]) -> Path:
+    """Append a JSONL event to ``data/conversations/<session_id>.jsonl``.
+
+    The file is treated as an append-only log.  Each line records one CLI
+    interaction (ask / resume / feedback) with timestamp + prompt + result
+    summary so callers can replay the conversation by reading the file.
+    """
+    path = _conversation_path(session_id)
+    line = json.dumps(event, ensure_ascii=False)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+    return path
+
+
+def _summarize_result_text(text: str | None, limit: int = 280) -> str:
+    if not text:
+        return ""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[:limit] + "…"
 
 
 def _slugify(value: str) -> str:
@@ -166,6 +200,7 @@ def _run_claude_agent(
     plugin_dir: Path,
     claude_bin: str,
     output_format: str = "stream-json",
+    model: str | None = None,
 ) -> dict[str, Any]:
     argv = [
         claude_bin,
@@ -178,6 +213,8 @@ def _run_claude_agent(
         agent,
         "--dangerously-skip-permissions",
     ]
+    if model:
+        argv.extend(["--model", model])
     if session_id:
         argv.extend(["--session-id", session_id])
     if resume_session_id:
@@ -249,6 +286,44 @@ def _build_ingest_file_prompt(paths: list[str], section_path: str) -> str:
     lines.extend(f"- {path}" for path in paths)
     if section_path:
         lines.extend(["", "## 可选元信息", f"- section_path: {section_path}"])
+    return "\n".join(lines)
+
+
+def _build_remove_doc_prompt(
+    doc_ids: list[str],
+    urls: list[str],
+    sha256: str,
+    confirm: bool,
+    force_recent: bool,
+    reason: str,
+) -> str:
+    lines = [
+        "## 任务",
+        "remove_doc",
+        "",
+        "## 目标",
+    ]
+    if doc_ids:
+        lines.append("doc_ids:")
+        lines.extend(f"  - {d}" for d in doc_ids)
+    if urls:
+        lines.append("urls:")
+        lines.extend(f"  - {u}" for u in urls)
+    if sha256:
+        lines.append(f"sha256: {sha256}")
+    lines.extend(
+        [
+            "",
+            "## 选项",
+            f"confirm: {'true' if confirm else 'false'}",
+            f"force_recent: {'true' if force_recent else 'false'}",
+            f"reason: {reason or '(未提供)'}",
+            "",
+            "## 返回要求",
+            "严格按 lifecycle-workflow 步骤 9 的 JSON 结构返回。",
+            "如果 confirm=false，只输出 dry-run 清单，不动任何存储。",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -374,14 +449,130 @@ def cmd_ask(args: argparse.Namespace) -> int:
         plugin_dir=ROOT_DIR,
         claude_bin=claude_bin,
         output_format=args.output_format,
+        model=getattr(args, 'model', None),
+    )
+    conv_path = _append_conversation_event(
+        session_id,
+        {
+            "ts": _now_iso(),
+            "event": "ask",
+            "session_id": session_id,
+            "prompt": args.prompt,
+            "no_supplement": bool(args.no_supplement),
+            "ok": result["ok"],
+            "exit_code": result["exit_code"],
+            "answer_summary": _summarize_result_text(result.get("stdout")),
+        },
     )
     payload = {
         "command": "ask",
         "session_id": session_id,
         "feedback_recommended": result["ok"],
+        "conversation_log": str(conv_path),
         "result": result,
     }
     return _print_json(payload, 0 if result["ok"] else result["exit_code"] or 1)
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    claude_bin = _resolve_claude_bin(args.claude_bin)
+    resume_id = _ensure_uuid(args.session_id)
+    prompt = _build_ask_prompt(args.prompt, args.no_supplement)
+    result = _run_claude_agent(
+        agent="brain-base:qa-agent",
+        prompt=prompt,
+        session_id=None,
+        resume_session_id=resume_id,
+        plugin_dir=ROOT_DIR,
+        claude_bin=claude_bin,
+        output_format=args.output_format,
+        model=getattr(args, 'model', None),
+    )
+    conv_path = _append_conversation_event(
+        resume_id,
+        {
+            "ts": _now_iso(),
+            "event": "resume",
+            "session_id": resume_id,
+            "prompt": args.prompt,
+            "no_supplement": bool(args.no_supplement),
+            "ok": result["ok"],
+            "exit_code": result["exit_code"],
+            "answer_summary": _summarize_result_text(result.get("stdout")),
+        },
+    )
+    payload = {
+        "command": "resume",
+        "session_id": resume_id,
+        "feedback_recommended": result["ok"],
+        "conversation_log": str(conv_path),
+        "result": result,
+    }
+    return _print_json(payload, 0 if result["ok"] else result["exit_code"] or 1)
+
+
+def _read_conversation_events(path: Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    if not path.exists():
+        return events
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            events.append({"raw": line, "parse_error": True})
+    return events
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    """List recorded conversations or replay a single session."""
+    CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    if args.session_id:
+        sid = _ensure_uuid(args.session_id)
+        path = _conversation_path(sid)
+        events = _read_conversation_events(path)
+        payload = {
+            "mode": "session",
+            "session_id": sid,
+            "log_path": str(path),
+            "exists": path.exists(),
+            "event_count": len(events),
+            "events": events,
+        }
+        return _print_json(payload)
+
+    files = sorted(
+        CONVERSATIONS_DIR.glob("*.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    sessions: list[dict[str, Any]] = []
+    for path in files[: args.limit]:
+        events = _read_conversation_events(path)
+        first = events[0] if events else {}
+        last = events[-1] if events else {}
+        sessions.append(
+            {
+                "session_id": path.stem,
+                "log_path": str(path),
+                "event_count": len(events),
+                "first_ts": first.get("ts", ""),
+                "last_ts": last.get("ts", ""),
+                "first_prompt": first.get("prompt", ""),
+                "last_event": last.get("event", ""),
+                "last_answer_summary": last.get("answer_summary", ""),
+            }
+        )
+    payload = {
+        "mode": "list",
+        "conversations_dir": str(CONVERSATIONS_DIR),
+        "limit": args.limit,
+        "total": len(files),
+        "sessions": sessions,
+    }
+    return _print_json(payload)
 
 
 def cmd_ingest_url(args: argparse.Namespace) -> int:
@@ -396,6 +587,7 @@ def cmd_ingest_url(args: argparse.Namespace) -> int:
         plugin_dir=ROOT_DIR,
         claude_bin=claude_bin,
         output_format=args.output_format,
+        model=getattr(args, 'model', None),
     )
     payload = {
         "command": "ingest-url",
@@ -417,6 +609,7 @@ def cmd_ingest_file(args: argparse.Namespace) -> int:
         plugin_dir=ROOT_DIR,
         claude_bin=claude_bin,
         output_format=args.output_format,
+        model=getattr(args, 'model', None),
     )
     payload = {
         "command": "ingest-file",
@@ -464,11 +657,65 @@ def cmd_feedback(args: argparse.Namespace) -> int:
         plugin_dir=ROOT_DIR,
         claude_bin=claude_bin,
         output_format=args.output_format,
+        model=getattr(args, 'model', None),
+    )
+    conv_path = _append_conversation_event(
+        resume_id,
+        {
+            "ts": _now_iso(),
+            "event": "feedback",
+            "session_id": resume_id,
+            "status": args.status,
+            "note": args.note,
+            "ok": result["ok"],
+            "exit_code": result["exit_code"],
+            "answer_summary": _summarize_result_text(result.get("stdout")),
+        },
     )
     payload = {
         "command": "feedback",
         "session_id": resume_id,
         "status": args.status,
+        "conversation_log": str(conv_path),
+        "result": result,
+    }
+    return _print_json(payload, 0 if result["ok"] else result["exit_code"] or 1)
+
+
+def cmd_remove_doc(args: argparse.Namespace) -> int:
+    if not (args.doc_id or args.url or args.sha256):
+        return _print_json(
+            {
+                "command": "remove-doc",
+                "ok": False,
+                "error": "必须提供 --doc-id / --url / --sha256 之一",
+            },
+            2,
+        )
+    claude_bin = _resolve_claude_bin(args.claude_bin)
+    session_id = _ensure_uuid(args.session_id)
+    prompt = _build_remove_doc_prompt(
+        doc_ids=args.doc_id or [],
+        urls=args.url or [],
+        sha256=args.sha256 or "",
+        confirm=bool(args.confirm),
+        force_recent=bool(args.force_recent),
+        reason=args.reason or "",
+    )
+    result = _run_claude_agent(
+        agent="brain-base:lifecycle-agent",
+        prompt=prompt,
+        session_id=session_id,
+        resume_session_id=None,
+        plugin_dir=ROOT_DIR,
+        claude_bin=claude_bin,
+        output_format=args.output_format,
+        model=getattr(args, 'model', None),
+    )
+    payload = {
+        "command": "remove-doc",
+        "session_id": session_id,
+        "confirm": bool(args.confirm),
         "result": result,
     }
     return _print_json(payload, 0 if result["ok"] else result["exit_code"] or 1)
@@ -504,9 +751,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask.add_argument("prompt")
     p_ask.add_argument("--session-id", default=None)
     p_ask.add_argument("--claude-bin", default=None)
+    p_ask.add_argument("--model", default=None, help="覆盖 claude-code 默认模型（如 sonnet / haiku）")
     p_ask.add_argument("--no-supplement", action="store_true")
     p_ask.add_argument("--output-format", default="stream-json", choices=["stream-json", "text", "json"])
     p_ask.set_defaults(func=cmd_ask)
+
+    p_resume = sub.add_parser(
+        "resume",
+        help="基于已有 session_id 继续多轮对话（底层走 claude --resume，由 qa-agent 复用上下文）",
+    )
+    p_resume.add_argument("--session-id", required=True)
+    p_resume.add_argument("prompt")
+    p_resume.add_argument("--claude-bin", default=None)
+    p_resume.add_argument("--model", default=None, help="覆盖 claude-code 默认模型")
+    p_resume.add_argument("--no-supplement", action="store_true")
+    p_resume.add_argument("--output-format", default="stream-json", choices=["stream-json", "text", "json"])
+    p_resume.set_defaults(func=cmd_resume)
+
+    p_history = sub.add_parser(
+        "history",
+        help="列出会话历史；不传 --session-id 列出最近的会话摘要，传 --session-id 回放该 session 的所有事件",
+    )
+    p_history.add_argument("--session-id", default=None)
+    p_history.add_argument("--limit", type=int, default=20)
+    p_history.set_defaults(func=cmd_history)
 
     p_ingest_url = sub.add_parser("ingest-url", help="调用 get-info-agent 把 URL 补充入库")
     p_ingest_url.add_argument("--url", action="append", required=True)
@@ -514,6 +782,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest_url.add_argument("--latest", action="store_true")
     p_ingest_url.add_argument("--session-id", default=None)
     p_ingest_url.add_argument("--claude-bin", default=None)
+    p_ingest_url.add_argument("--model", default=None, help="覆盖 claude-code 默认模型")
     p_ingest_url.add_argument("--output-format", default="stream-json", choices=["stream-json", "text", "json"])
     p_ingest_url.set_defaults(func=cmd_ingest_url)
 
@@ -522,6 +791,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest_file.add_argument("--section-path", default="")
     p_ingest_file.add_argument("--session-id", default=None)
     p_ingest_file.add_argument("--claude-bin", default=None)
+    p_ingest_file.add_argument("--model", default=None, help="覆盖 claude-code 默认模型")
     p_ingest_file.add_argument("--output-format", default="stream-json", choices=["stream-json", "text", "json"])
     p_ingest_file.set_defaults(func=cmd_ingest_file)
 
@@ -542,8 +812,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_feedback.add_argument("--status", choices=["confirmed", "rejected", "supplement"], required=True)
     p_feedback.add_argument("--note", default="")
     p_feedback.add_argument("--claude-bin", default=None)
+    p_feedback.add_argument("--model", default=None, help="覆盖 claude-code 默认模型")
     p_feedback.add_argument("--output-format", default="stream-json", choices=["stream-json", "text", "json"])
     p_feedback.set_defaults(func=cmd_feedback)
+
+    p_remove_doc = sub.add_parser(
+        "remove-doc",
+        help="(危险) 通过 lifecycle-agent 编排删除文档（默认 dry-run，需 --confirm 才真删）",
+    )
+    p_remove_doc.add_argument("--doc-id", action="append", help="要删除的 doc_id；可重复")
+    p_remove_doc.add_argument("--url", action="append", help="要删除的 raw 文档对应 url；可重复")
+    p_remove_doc.add_argument("--sha256", help="按 body SHA-256 解析 doc_id")
+    p_remove_doc.add_argument("--confirm", action="store_true", help="必须显式加上才会真删；默认 dry-run")
+    p_remove_doc.add_argument("--force-recent", action="store_true", help="允许删除 10 分钟内创建的新文档")
+    p_remove_doc.add_argument("--reason", default="", help="审计日志中记录的删除原因（建议必填）")
+    p_remove_doc.add_argument("--session-id", default=None)
+    p_remove_doc.add_argument("--claude-bin", default=None)
+    p_remove_doc.add_argument("--model", default=None, help="覆盖 claude-code 默认模型")
+    p_remove_doc.add_argument("--output-format", default="stream-json", choices=["stream-json", "text", "json"])
+    p_remove_doc.set_defaults(func=cmd_remove_doc)
 
     return parser
 

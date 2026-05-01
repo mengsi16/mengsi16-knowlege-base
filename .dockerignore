@@ -1,0 +1,41 @@
+# 构建上下文排除：避免把数据/缓存/git 历史拷进镜像
+
+# 持久化数据
+data/
+volumes/
+
+# 构建/缓存目录
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Git
+.git/
+.gitignore
+
+# 文档/静态资源（按需保留 README，已在 Dockerfile 显式 COPY）
+*.png
+*.jpg
+*.jpeg
+
+# 开发本地 artefacts
+.playwright/
+.playwright-cli/
+.playwright-mcp/
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 上传/草稿
+papers/
+docs/
+planning/
+brain-base-skill/

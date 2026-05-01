@@ -7,12 +7,13 @@ This manual is for users who "don't want to repeatedly manually confirm permissi
 Different from the quick start in README, this covers the complete pipeline:
 
 1. Environment Preparation
-2. Milvus Startup and Verification
+2. Milvus Startup and Verification (including Docker all-in-one deployment)
 3. QA Agent Full-Permission Startup
 4. QA -> Get-Info Automatic Collaboration
 5. Upload Entry Point (upload-agent) and Local Document Ingestion
-6. Background Running Strategies
-7. Common Failures and Recovery
+6. Multi-turn Dialogue and Document Lifecycle Management
+7. Background Running Strategies
+8. Common Failures and Recovery
 
 ---
 
@@ -35,7 +36,7 @@ Feasible approaches:
 
 ## 1. Current Architecture and Call Chain
 
-brain-base has **two parallel entry points** that converge at the `knowledge-persistence` layer:
+brain-base has **two parallel entry points + one management entry point** that converge at the `knowledge-persistence` layer:
 
 ### Entry A: Q&A / Web Supplementation (qa-agent)
 
@@ -53,6 +54,13 @@ brain-base has **two parallel entry points** that converge at the `knowledge-per
    - Assembles frontmatter (`source_type: user-upload`, `original_file`), persists to `data/docs/raw/<doc_id>.md`.
    - Calls `knowledge-persistence` to perform 5000-character threshold chunking + synthetic QA + Milvus ingestion.
 3. **upload-agent does not trigger organize-agent / get-info-agent**. Uploaded documents only walk the crystallization path next time qa-agent retrieves them.
+
+### Entry C: Document Lifecycle Management (lifecycle-agent)
+
+1. The caller initiates a deletion request via `brain-base-cli.py remove-doc`.
+2. lifecycle-agent orchestrates cross-store consistent deletion: Milvus rows → raw/chunks files → doc2query-index → crystallized index mark rejected → audit log.
+3. Defaults to dry-run (output checklist only), executes deletion only with `--confirm`.
+4. **lifecycle-agent is the sole agent authorized to delete raw layer across stores**; other agents should not directly delete raw/chunks/Milvus data.
 
 Note:
 
@@ -166,10 +174,26 @@ Enter plugin directory:
 Set-Location "your\path\to\brain-base's parent directory\brain-base"
 ```
 
-Start:
+**Method A: Docker all-in-one deployment (recommended, includes Milvus + brain-base container)**
 
 ```powershell
 docker compose up -d
+```
+
+This starts the Milvus trio (etcd + minio + standalone) and the brain-base container (Python + Node.js + Claude Code + Playwright-cli + all dependencies) together.
+
+Trigger tasks via in-container CLI:
+
+```powershell
+docker compose exec brain-base python bin/brain-base-cli.py health
+docker compose exec brain-base python bin/brain-base-cli.py ask "your question"
+docker compose exec brain-base python bin/brain-base-cli.py ingest-url --url "https://example.com/doc" --topic "topic"
+```
+
+**Method B: Start Milvus only (local development)**
+
+```powershell
+docker compose up -d etcd minio standalone
 ```
 
 Check status:
@@ -225,7 +249,21 @@ You can skip this step if not using upload-agent — qa-agent does not depend on
 
 ## 5. Full-Permission Startup of QA Agent (Automation Mode)
 
-Execute in `brain-base` directory:
+**Recommended: brain-base-cli**
+
+```powershell
+python bin/brain-base-cli.py ask "your question"
+```
+
+`brain-base-cli.py` auto-handles `session_id`, `HF_HUB_OFFLINE`, `--dangerously-skip-permissions` and other parameters, outputting structured JSON.
+
+To override the default model:
+
+```powershell
+python bin/brain-base-cli.py ask "your question" --model sonnet
+```
+
+**Interactive mode: launch claude-code directly**
 
 ```powershell
 Set-Location "your\path\to\brain-base's parent directory\brain-base"
@@ -274,6 +312,21 @@ You'll see QA call Get-Info in the same task flow to complete supplementation be
 | Any form | No, only want to retrieve existing knowledge | `qa-agent` |
 
 ### 6.5.2 Start Commands
+
+**Recommended: brain-base-cli**
+
+```powershell
+# Local file ingestion
+python bin/brain-base-cli.py ingest-file --path "C:\papers\knowledge-distillation.pdf"
+
+# Plain text ingestion
+python bin/brain-base-cli.py ingest-text --content "# Title\nContent..." --title "Document Title"
+
+# URL supplementation
+python bin/brain-base-cli.py ingest-url --url "https://example.com/doc" --topic "topic"
+```
+
+**Interactive mode: launch claude-code directly**
 
 ```powershell
 Set-Location "your\path\to\brain-base"
@@ -336,6 +389,50 @@ The two agents do not conflict and can be used simultaneously:
 - In qa-agent sessions, typing a local file path prompts you to switch to upload-agent.
 - After upload-agent finishes ingestion, switch back to qa-agent for retrieval.
 - External agents can automatically pick the correct agent via `brain-base-skill` (see `skills/brain-base-skill/SKILL.md`).
+
+---
+
+## 6.5 Multi-turn Dialogue and Document Lifecycle Management
+
+### 6.5.1 Multi-turn Dialogue (resume / history)
+
+brain-base-cli's `ask` command automatically persists session events to `data/conversations/<session_id>.jsonl`. Multi-turn dialogue is supported via session_id:
+
+```powershell
+# 1. First question, returns session_id
+python bin/brain-base-cli.py ask "What is the difference between search and ask?"
+
+# 2. Continue dialogue based on same session_id
+python bin/brain-base-cli.py resume --session-id <ID> "Continue the previous topic"
+
+# 3. View conversation history
+python bin/brain-base-cli.py history                          # List recent sessions
+python bin/brain-base-cli.py history --session-id <ID>       # Replay specific session
+```
+
+### 6.5.2 Document Lifecycle Management (remove-doc)
+
+`lifecycle-agent` is the sole agent authorized to delete raw layer (raw/chunks/Milvus) across stores. Invoked via `remove-doc` command:
+
+```powershell
+# dry-run: output deletion checklist only, no operations executed
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --reason "Outdated document"
+
+# confirm: execute cross-store consistent deletion
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --confirm --reason "Confirm deletion"
+
+# Delete by URL or SHA-256 lookup
+python bin/brain-base-cli.py remove-doc --url "https://example.com/old-doc" --confirm --reason "URL expired"
+python bin/brain-base-cli.py remove-doc --sha256 <HASH> --confirm --reason "Duplicate document"
+```
+
+Deletion flow (orchestrated by lifecycle-workflow):
+
+1. Milvus: delete all vector rows by doc_id
+2. Filesystem: delete raw + chunks + uploads files
+3. doc2query-index: remove corresponding entries
+4. crystallized index: mark skills referencing this doc as rejected
+5. Audit log: append to `data/lifecycle-audit.jsonl`
 
 ---
 
@@ -411,9 +508,11 @@ Daily start:
 1. `docker compose up -d` (in `brain-base` directory)
 2. `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test`. First run downloads BGE-M3 model (1.4 GB).
 3. (Only if planning to upload local documents) `python bin/doc-converter.py check-runtime` to verify MinerU / pandoc backends are available as needed.
-4. Start the corresponding agent based on the scenario:
-   - Q&A / web supplementation: `claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions`
-   - Local document upload: `claude --plugin-dir . --agent brain-base:upload-agent --dangerously-skip-permissions`
+4. Start the corresponding command based on the scenario:
+   - Q&A / web supplementation: `python bin/brain-base-cli.py ask "your question"`
+   - Local document upload: `python bin/brain-base-cli.py ingest-file --path <FILE>`
+   - Delete document: `python bin/brain-base-cli.py remove-doc --doc-id <ID> --reason "reason"`
+   - Or interactive startup: `claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions`
 5. If new chunk files added that day (frontmatter must contain `questions: [...]`; upload-agent auto-generates this), execute `python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/*.md"` for hybrid ingestion (CLI simultaneously writes chunk rows and question rows, return report shows `chunk_rows`/`question_rows` counts). **upload-agent already automates this step; only needed after manually editing chunks.**
 6. When retrieval verification needed, can run multi-query-search in command line to see RRF results: `python bin/milvus-cli.py multi-query-search --query "..." --query "..."`
 7. Occasionally check self-evolving crystallized layer status: look at `skills` entry count in `data/crystallized/index.json` and `lint-report.md` (if exists).
@@ -517,7 +616,19 @@ Check in order:
 
 #### Want to Delete a Document After Ingestion
 
-Handling:
+**Recommended: use remove-doc command** (cross-store consistent deletion, dry-run by default)
+
+```powershell
+# 1. First dry-run to view deletion checklist
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --reason "Outdated document"
+
+# 2. Confirm and execute deletion
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --confirm --reason "Confirm deletion"
+```
+
+remove-doc automatically handles: Milvus row deletion → raw/chunks/uploads file deletion → doc2query-index cleanup → crystallized index mark rejected → audit log write.
+
+**Manual method (not recommended, easy to miss steps)**:
 
 ```powershell
 # 1. Delete chunk / raw / uploads files
@@ -581,16 +692,28 @@ Handling: Run `crystallize-lint`. In `claude --plugin-dir . --agent brain-base:o
 Set-Location "your\path\to\brain-base's parent directory\brain-base"; docker compose up -d; python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 ```
 
-### One-Click Enter Full-Permission QA
+### One-Click Q&A (Recommended: brain-base-cli)
 
 ```powershell
-Set-Location "your\path\to\brain-base's parent directory\brain-base"; claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions
+python bin/brain-base-cli.py ask "your question"
 ```
 
 ### One-Click Upload Local Document for Ingestion
 
 ```powershell
-Set-Location "your\path\to\brain-base's parent directory\brain-base"; claude --plugin-dir . --agent brain-base:upload-agent --dangerously-skip-permissions -p "Please ingest the following file: C:\papers\knowledge-distillation.pdf"
+python bin/brain-base-cli.py ingest-file --path "C:\papers\knowledge-distillation.pdf"
+```
+
+### One-Click Delete Document (dry-run)
+
+```powershell
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --reason "Outdated document"
+```
+
+### Interactive Full-Permission QA
+
+```powershell
+Set-Location "your\path\to\brain-base's parent directory\brain-base"; claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions
 ```
 
 ---
@@ -651,6 +774,110 @@ Common natural language commands:
 ### 12.5 Why Not Use Scheduled Tasks
 
 Crystallized layer writes, refreshes, and feedback processing are all **event-driven** (user question / satisfied answer / feedback), no scheduled tasks needed. `crystallize-lint` triggered manually in session, no need to run periodically.
+
+---
+
+## 12.5 Docker Data Migration and Storage Management
+
+### 12.5.1 Migrating from Old Deployment to New Deployment
+
+If you previously only started the Milvus trio (`etcd + minio + standalone`), and now want to migrate to the Docker all-in-one deployment (including brain-base container):
+
+**Step 1: Preserve Old Data**
+
+Old deployment knowledge base data is in two places:
+
+1. **Filesystem data** (`data/` directory): raw documents, chunks, conversations, crystallized, lifecycle-audit, etc.
+2. **Milvus vector data** (`volumes/milvus/` directory): embedding vector indexes
+
+**Step 2: Migrate Filesystem Data**
+
+```powershell
+# Copy old data/ directory to new deployment mount path
+# docker-compose.yml default mount: ./data:/app/data
+Copy-Item -Recurse "old_path\brain-base\data" "new_path\brain-base\data"
+```
+
+**Step 3: Migrate Milvus Vector Data**
+
+```powershell
+# Milvus data is under volumes/milvus/, just copy it
+Copy-Item -Recurse "old_path\brain-base\volumes\milvus" "new_path\brain-base\volumes\milvus"
+Copy-Item -Recurse "old_path\brain-base\volumes\etcd" "new_path\brain-base\volumes\etcd"
+Copy-Item -Recurse "old_path\brain-base\volumes\minio" "new_path\brain-base\volumes\minio"
+```
+
+**Step 4: Start New Deployment**
+
+```powershell
+docker compose up -d
+docker compose exec brain-base python bin/brain-base-cli.py health
+```
+
+If Milvus data migration succeeds, `search` should immediately recall old documents. If Milvus data is corrupted or version-incompatible, rebuild from filesystem:
+
+```powershell
+# Rebuild Milvus index (re-ingest from chunks files)
+docker compose exec brain-base python bin/milvus-cli.py drop-collection --confirm
+docker compose exec brain-base python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/*.md"
+```
+
+### 12.5.2 Limiting Docker Storage Growth
+
+Docker volumes have no size limit by default and will grow continuously. Control strategies:
+
+**1. Milvus Auto Compaction (enabled by default)**
+
+Milvus standalone has `dataCoord.compaction.enable=true` by default, automatically merging small segments. Adjust in `docker-compose.yml` standalone environment variables:
+
+```yaml
+environment:
+  DATAcoord_COMPACTION_EXPIRED_TTL: "86400"   # Expired data compaction interval (seconds)
+  DATAcoord_COMPACTION_CLEANUP_TIMEOUT: "300"  # Cleanup timeout after compaction
+```
+
+**2. Periodic Cleanup of Outdated Documents**
+
+Triggered by upper-layer Agent or cron via `remove-doc`:
+
+```powershell
+# dry-run to view documents to delete
+python bin/brain-base-cli.py remove-doc --doc-id <OLD_DOC_ID> --reason "Outdated"
+
+# Confirm deletion
+python bin/brain-base-cli.py remove-doc --doc-id <OLD_DOC_ID> --confirm --reason "Periodic cleanup"
+```
+
+**3. WSL2 Disk Limit (Windows users)**
+
+Set in `%USERPROFILE%\.wslconfig`:
+
+```xml
+<wslconfig>
+  <storageLimit>50GB</storageLimit>
+</wslconfig>
+```
+
+Restart WSL to take effect. When Docker data approaches the limit, actively clean `volumes/` and `data/`.
+
+**4. Manual Model Cache Cleanup**
+
+Model caches (bge-m3 ~1.4GB + MinerU ~2GB + Playwright ~500MB) don't auto-grow, but can be deleted when confirmed unnecessary:
+
+```powershell
+# Delete model caches (will re-download on next startup)
+Remove-Item -Recurse volumes\huggingface
+Remove-Item -Recurse volumes\mineru
+Remove-Item -Recurse volumes\playwright
+```
+
+**5. Monitor Storage Usage**
+
+```powershell
+# Check volume usage
+Get-ChildItem -Recurse data | Measure-Object -Property Length -Sum
+Get-ChildItem -Recurse volumes | Measure-Object -Property Length -Sum
+```
 
 ---
 

@@ -422,7 +422,7 @@ brain-base can not only be used as a Plugin in Claude Code, but any system with 
 
 ### Recommended: brain-base-cli (Unified External CLI)
 
-`bin/brain-base-cli.py` is the unified invocation entry point for external Agents, providing 8 commands with structured JSON output and `stream-json` real-time intermediate state visibility — no need to manually assemble `claude -p` parameters:
+`bin/brain-base-cli.py` is the unified invocation entry point for external Agents, providing 11 commands with structured JSON output and `stream-json` real-time intermediate state visibility — no need to manually assemble `claude -p` parameters:
 
 ```bash
 # Health check
@@ -448,9 +448,20 @@ python bin/brain-base-cli.py ingest-text --content "# Title\nContent..." --title
 
 # Solidification feedback (confirm/reject/supplement previous answer by session_id)
 python bin/brain-base-cli.py feedback --session-id <ID> --status confirmed
+
+# Multi-turn conversation continuation (reuse context by session_id)
+python bin/brain-base-cli.py resume --session-id <ID> "Continue the previous topic"
+
+# View conversation history (no --session-id lists recent sessions, with it replays a specific session)
+python bin/brain-base-cli.py history
+python bin/brain-base-cli.py history --session-id <ID>
+
+# Remove document (dry-run by default, --confirm to actually delete, across Milvus/raw/chunks/index)
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --reason "Outdated document"
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --confirm --reason "Confirm deletion"
 ```
 
-All commands output structured JSON. The `--output-format` parameter defaults to `stream-json` (real-time intermediate state visible), and can be switched to `text` or `json`.
+All commands output structured JSON. The `--output-format` parameter defaults to `stream-json` (real-time intermediate state visible), and can be switched to `text` or `json`. All commands that invoke claude-code support the `--model` parameter to override the default model (e.g. `--model sonnet`).
 
 For detailed command matrix and integration strategy, see `skills/brain-base-skill/SKILL.md` and `md/BRAIN_BASE_EXTERNAL_CLI_IMPLEMENTATION.md`.
 
@@ -548,8 +559,18 @@ If you want the "long-term runnable, full-permission automation, background supp
 
 ### 1. Start Milvus
 
+**Method A: Docker all-in-one deployment (recommended, includes Milvus + brain-base container)**
+
 ```bash
 docker compose up -d
+```
+
+This starts the Milvus trio (etcd + minio + standalone) and the brain-base container (Python + Node.js + Claude Code + Playwright-cli + all dependencies) together. Trigger tasks via `docker compose exec brain-base python bin/brain-base-cli.py ...`.
+
+**Method B: Start Milvus only (local development)**
+
+```bash
+docker compose up -d etcd minio standalone
 ```
 
 Verify Milvus:
@@ -734,7 +755,8 @@ brain-base/
 │   ├── qa-agent.md
 │   ├── get-info-agent.md         # External supplementation entry
 │   ├── upload-agent.md           # Local document upload entry (parallel to get-info-agent)
-│   └── organize-agent.md         # Self-Evolving Crystallized Layer Dispatcher Agent
+│   ├── organize-agent.md         # Self-Evolving Crystallized Layer Dispatcher Agent
+│   └── lifecycle-agent.md        # Document lifecycle management agent (sole authority for cross-store deletion)
 ├── skills/
 │   ├── qa-workflow/
 │   ├── crystallize-workflow/     # Crystallized Layer Hit Detection / Write / Refresh
@@ -746,13 +768,14 @@ brain-base/
 │   ├── web-research-ingest/
 │   ├── knowledge-persistence/    # Shared downstream for both entry points
 │   ├── update-priority/
+│   ├── lifecycle-workflow/       # Document lifecycle deletion workflow (dry-run + confirm two-phase)
 │   └── brain-base-skill/         # External Agent Invocation Manual (documents both qa-agent and upload-agent entries)
 ├── bin/
 │   ├── milvus-cli.py
 │   ├── eval-recall.py             # recall@K, feedback, coverage, doc2query-index
 │   ├── source-priority.py         # source_priority annotation and source conflict detection
 │   ├── doc-converter.py          # MinerU + pandoc + native TXT/MD uniform conversion to Markdown
-│   ├── brain-base-cli.py         # Unified external Agent invocation CLI (8 commands, structured JSON output)
+│   ├── brain-base-cli.py         # Unified external Agent invocation CLI (11 commands, structured JSON output)
 │   └── scheduler-cli.py
 ├── planning/                     # Project convergence and transformation plans
 ├── data/                         # gitignored, auto-created at runtime
@@ -760,9 +783,11 @@ brain-base/
 │   │   ├── raw/                  # Raw Layer — written by get-info-agent / upload-agent, LLM read-only
 │   │   └── uploads/              # Original user-uploaded files archive (written by upload-agent)
 │   ├── docs/chunks/              # Crystallized Layer — written by knowledge-persistence (LLM semantic chunking)
+│   ├── conversations/            # Conversation persistence (ask/resume/feedback event stream, one .jsonl per session)
 │   ├── crystallized/             # Crystallized Layer — written by organize-agent (solidified answers)
 │   │   ├── index.json            # Solidified skill index
 │   │   └── <skill_id>.md         # Each solidified skill one file
+│   ├── lifecycle-audit.jsonl    # Document lifecycle audit log
 │   ├── priority.json
 │   ├── keywords.db
 │   └── eval/
@@ -938,7 +963,10 @@ This repository currently completed:
 15. **Cross-Encoder Re-ranking (Agentic RAG P0)**: `multi-query-search --rerank` enables `bge-reranker-v2-m3` cross-encoder semantic re-ranking after RRF merge; soft dependency, silently falls back to pure RRF if model unavailable. qa-workflow Step 2.5 recommends always adding `--rerank`.
 16. **Complex Question Decomposition (Agentic RAG P0)**: qa-workflow Step 1.5 identifies four types of complex questions (multi-part / comparison / causal-chain / solution-selection), automatically decomposes into 2-4 independent sub-questions, each with its own L0-L3 rewriting and retrieval, then merges evidence for a comprehensive answer. Simple factual questions skip decomposition.
 17. **Answer Quality Self-Check / Maker-Checker Loop (Agentic RAG P0)**: qa-workflow Step 8.5 performs structured self-evaluation after answer generation on faithfulness / completeness / consistency; failed dimensions trigger one correction round; failure does not block the answer. Results are recorded in the recall trace `answer_eval` field.
-18. **Unified External Agent Invocation CLI (brain-base-cli)**: `bin/brain-base-cli.py` provides 8 commands (`health` / `search` / `exists` / `ask` / `ingest-url` / `ingest-file` / `ingest-text` / `feedback`), all outputting structured JSON with `stream-json` real-time intermediate state by default; auto-handles `session_id` UUID format conversion and `HF_HUB_OFFLINE` offline model loading, so external Agents don't need to worry about low-level `claude -p` parameter details. See `md/BRAIN_BASE_EXTERNAL_CLI_IMPLEMENTATION.md`.
+18. **Unified External Agent Invocation CLI (brain-base-cli)**: `bin/brain-base-cli.py` provides 11 commands (`health` / `search` / `exists` / `ask` / `ingest-url` / `ingest-file` / `ingest-text` / `feedback` / `resume` / `history` / `remove-doc`), all outputting structured JSON with `stream-json` real-time intermediate state by default; auto-handles `session_id` UUID format conversion and `HF_HUB_OFFLINE` offline model loading; all commands that invoke claude-code support the `--model` parameter to override the default model. See `md/BRAIN_BASE_EXTERNAL_CLI_IMPLEMENTATION.md`.
+19. **Conversation persistence and multi-turn dialogue**: `ask` / `resume` / `feedback` commands automatically persist to `data/conversations/<session_id>.jsonl`; `resume` command leverages `claude --resume` to reuse context for multi-turn conversations; `history` command queries recent session list or replays a specific session's event stream.
+20. **Document lifecycle management**: `lifecycle-agent` + `lifecycle-workflow` orchestrate cross-store consistent deletion (Milvus rows → raw/chunks files → doc2query-index → crystallized index mark rejected → audit log); `remove-doc` command defaults to dry-run (output checklist only), executes deletion only with `--confirm`; `milvus-cli.py` adds `delete-by-doc-ids` subcommand for deleting Milvus rows by doc_id.
+21. **Docker all-in-one deployment**: `Dockerfile` + `docker-compose.yml` implement full-stack containerization (Milvus trio + brain-base container with Python + Node.js + Claude Code + Playwright-cli + all dependencies); model cache persistence mount avoids repeated downloads; trigger tasks via `docker compose exec brain-base python bin/brain-base-cli.py ...`.
 
 Current high-priority pain points (P0/P1) are completed; P2 content hash deduplication and recall evaluation baseline are done. Agentic RAG core features (cross-encoder re-ranking, complex question decomposition, answer quality self-check) are delivered. Recommended extension priorities based on real usage feedback:
 
@@ -947,4 +975,3 @@ Current high-priority pain points (P0/P1) are completed; P2 content hash dedupli
 3. Crystallized feedback auto-closure (T4): reduce `pending` → `confirmed` reliance on manual user feedback.
 4. Full data export (P3-3): implement when knowledge base starts cross-machine migration or team sharing.
 5. Crystallized layer embedding index (P3-1): implement when crystallized skill count exceeds 200.
-

@@ -7,12 +7,13 @@
 和 README 中的快速启动不同，这里覆盖完整链路：
 
 1. 环境准备
-2. Milvus 启动与验证
+2. Milvus 启动与验证（含 Docker 一键部署）
 3. QA Agent 全权限启动
 4. QA -> Get-Info 自动协作
 5. 上传入口（upload-agent）与本地文档入库
-6. 后台化运行策略
-7. 常见故障与恢复
+6. 多轮对话与文档生命周期管理
+7. 后台化运行策略
+8. 常见故障与恢复
 
 ---
 
@@ -35,7 +36,7 @@
 
 ## 1. 当前架构与调用链
 
-brain-base 有**两条并列入口**，在 `knowledge-persistence` 层汇合：
+brain-base 有**两条并列入口 + 一条管理入口**，在 `knowledge-persistence` 层汇合：
 
 ### 入口 A：问答 / 联网补库（qa-agent）
 
@@ -53,6 +54,13 @@ brain-base 有**两条并列入口**，在 `knowledge-persistence` 层汇合：
    - 组装 frontmatter（`source_type: user-upload`，`original_file`），落盘到 `data/docs/raw/<doc_id>.md`。
    - 调用 `knowledge-persistence` 完成 5000 字符阈值分块 + 合成 QA + Milvus 入库。
 3. **upload-agent 不触发 organize-agent / get-info-agent**。上传完成的文档下次被 qa-agent 检索时才走固化路径。
+
+### 入口 C：文档生命周期管理（lifecycle-agent）
+
+1. 调用方通过 `brain-base-cli.py remove-doc` 发起删除请求。
+2. lifecycle-agent 编排跨存储层一致性删除：Milvus 行 → raw/chunks 文件 → doc2query-index → crystallized index 标记 rejected → 审计日志。
+3. 默认 dry-run（只输出清单），`--confirm` 后才执行删除。
+4. **lifecycle-agent 是唯一有权跨存储删除原始层的 agent**，其他 agent 不应直接删除 raw/chunks/Milvus 数据。
 
 注意：
 
@@ -166,10 +174,26 @@ python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 Set-Location "your\path\to\brain-base的父目录\brain-base"
 ```
 
-启动：
+**方式 A：Docker 一键部署（推荐，含 Milvus + brain-base 容器）**
 
 ```powershell
 docker compose up -d
+```
+
+此方式会同时启动 Milvus 三件套（etcd + minio + standalone）和 brain-base 容器（Python + Node.js + Claude Code + Playwright-cli + 所有依赖）。
+
+通过容器内 CLI 触发任务：
+
+```powershell
+docker compose exec brain-base python bin/brain-base-cli.py health
+docker compose exec brain-base python bin/brain-base-cli.py ask "你的问题"
+docker compose exec brain-base python bin/brain-base-cli.py ingest-url --url "https://example.com/doc" --topic "主题"
+```
+
+**方式 B：仅启动 Milvus（本地开发）**
+
+```powershell
+docker compose up -d etcd minio standalone
 ```
 
 查看状态：
@@ -225,7 +249,21 @@ python bin/doc-converter.py check-runtime
 
 ## 5. 全权限启动 QA Agent（自动化模式）
 
-在 `brain-base` 目录执行：
+**推荐方式：brain-base-cli**
+
+```powershell
+python bin/brain-base-cli.py ask "你的问题"
+```
+
+`brain-base-cli.py` 自动处理 `session_id`、`HF_HUB_OFFLINE`、`--dangerously-skip-permissions` 等参数，输出结构化 JSON。
+
+如需覆盖默认模型：
+
+```powershell
+python bin/brain-base-cli.py ask "你的问题" --model sonnet
+```
+
+**交互式方式：直接启动 claude-code**
 
 ```powershell
 Set-Location "your\path\to\brain-base的父目录\brain-base"
@@ -235,7 +273,7 @@ claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions
 这条命令的效果：
 
 1. 加载 brain-base plugin
-2. 指定 QA 为主 agent
+2. 指定 QA 为主动 agent
 3. 跳过权限确认弹窗（高自动化）
 
 安全提示：
@@ -274,6 +312,21 @@ claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions
 | 任何形态 | 无，只想检索已有知识 | `qa-agent` |
 
 ### 6.5.2 启动命令
+
+**推荐方式：brain-base-cli**
+
+```powershell
+# 本地文件入库
+python bin/brain-base-cli.py ingest-file --path "C:\papers\knowledge-distillation.pdf"
+
+# 纯文本入库
+python bin/brain-base-cli.py ingest-text --content "# 标题\n内容..." --title "文档标题"
+
+# URL 补库
+python bin/brain-base-cli.py ingest-url --url "https://example.com/doc" --topic "主题"
+```
+
+**交互式方式：直接启动 claude-code**
 
 ```powershell
 Set-Location "your\path\to\brain-base"
@@ -336,6 +389,50 @@ claude -p "把 以下文件入库：C:\papers\knowledge-distillation.pdf" --plug
 - qa-agent 会话中输入本地文件路径时会提示走 upload-agent。
 - upload-agent 会话完成入库后，再切回 qa-agent 检索即可。
 - 外部 Agent 通过 `brain-base-skill` 可自动选择正确的 agent（见 `skills/brain-base-skill/SKILL.md`）。
+
+---
+
+## 6.5 多轮对话与文档生命周期管理
+
+### 6.5.1 多轮对话（resume / history）
+
+brain-base-cli 的 `ask` 命令会自动落盘会话事件到 `data/conversations/<session_id>.jsonl`。基于 session_id 可实现多轮对话：
+
+```powershell
+# 1. 首次提问，返回 session_id
+python bin/brain-base-cli.py ask "brain-base 的 search 和 ask 有什么区别？"
+
+# 2. 基于同一 session_id 继续对话
+python bin/brain-base-cli.py resume --session-id <ID> "继续刚才的话题"
+
+# 3. 查看会话历史
+python bin/brain-base-cli.py history                          # 列出最近会话
+python bin/brain-base-cli.py history --session-id <ID>       # 回放指定 session
+```
+
+### 6.5.2 文档生命周期管理（remove-doc）
+
+`lifecycle-agent` 是唯一有权跨存储删除原始层（raw/chunks/Milvus）的 agent。通过 `remove-doc` 命令调用：
+
+```powershell
+# dry-run：只输出删除清单，不执行任何操作
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --reason "过期文档"
+
+# confirm：执行跨存储层一致性删除
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --confirm --reason "确认删除"
+
+# 按 URL 或 SHA-256 查找后删除
+python bin/brain-base-cli.py remove-doc --url "https://example.com/old-doc" --confirm --reason "URL 过期"
+python bin/brain-base-cli.py remove-doc --sha256 <HASH> --confirm --reason "重复文档"
+```
+
+删除流程（lifecycle-workflow 编排）：
+
+1. Milvus：按 doc_id 删除所有向量行
+2. 文件系统：删除 raw + chunks + uploads 文件
+3. doc2query-index：移除对应条目
+4. crystallized index：引用该 doc 的 skill 标记为 rejected
+5. 审计日志：追加写入 `data/lifecycle-audit.jsonl`
 
 ---
 
@@ -411,9 +508,11 @@ python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 1. `docker compose up -d`（在 `brain-base` 目录）
 2. `python bin/milvus-cli.py check-runtime --require-local-model --smoke-test`。首次运行会下载 BGE-M3 模型（1.4 GB）。
 3. （仅当打算上传本地文档时）`python bin/doc-converter.py check-runtime` 确认 MinerU / pandoc 后端按需可用。
-4. 根据场景启动对应 agent：
-   - 问答 / 联网补库：`claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions`
-   - 上传本地文档：`claude --plugin-dir . --agent brain-base:upload-agent --dangerously-skip-permissions`
+4. 根据场景启动对应命令：
+   - 问答 / 联网补库：`python bin/brain-base-cli.py ask "你的问题"`
+   - 上传本地文档：`python bin/brain-base-cli.py ingest-file --path <FILE>`
+   - 删除文档：`python bin/brain-base-cli.py remove-doc --doc-id <ID> --reason "原因"`
+   - 或交互式启动：`claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions`
 5. 若当日有新增 chunk 文件（frontmatter 里必须含 `questions: [...]`；upload-agent 自动生成），执行 `python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/*.md"` 做 hybrid 入库（CLI 会同时写 chunk 行与 question 行，返回报告会给出 `chunk_rows`/`question_rows` 计数）。**upload-agent 已把这步自动化，仅在手动调整 chunk 后才需要再跑。**
 6. 需要检索验证时，可在命令行跑 multi-query-search 看 RRF 结果：`python bin/milvus-cli.py multi-query-search --query "..." --query "..."`
 7. 偶尔检查自进化整理层状态：看 `data/crystallized/index.json` 的 `skills` 条目数与 `lint-report.md`（如存在）。
@@ -517,7 +616,19 @@ pandoc --version
 
 #### 上传完成后想删除该文档
 
-处理：
+**推荐方式：使用 remove-doc 命令**（跨存储层一致性删除，默认 dry-run）
+
+```powershell
+# 1. 先 dry-run 查看删除清单
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --reason "过期文档"
+
+# 2. 确认后执行删除
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --confirm --reason "确认删除"
+```
+
+remove-doc 会自动处理：Milvus 行删除 → raw/chunks/uploads 文件删除 → doc2query-index 清理 → crystallized index 标记 rejected → 审计日志写入。
+
+**手动方式（不推荐，容易遗漏）**：
 
 ```powershell
 # 1. 删除 chunk / raw / uploads 文件
@@ -581,16 +692,28 @@ Get-ChildItem index.json.broken-* | Select-Object -First 1
 Set-Location "your\path\to\brain-base的父目录\brain-base"; docker compose up -d; python bin/milvus-cli.py check-runtime --require-local-model --smoke-test
 ```
 
-### 一键进入全权限 QA
+### 一键问答（推荐 brain-base-cli）
 
 ```powershell
-Set-Location "your\path\to\brain-base的父目录\brain-base"; claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions
+python bin/brain-base-cli.py ask "你的问题"
 ```
 
 ### 一键上传本地文档入库
 
 ```powershell
-Set-Location "your\path\to\brain-base的父目录\brain-base"; claude --plugin-dir . --agent brain-base:upload-agent --dangerously-skip-permissions -p "把 以下文件入库：C:\papers\knowledge-distillation.pdf"
+python bin/brain-base-cli.py ingest-file --path "C:\papers\knowledge-distillation.pdf"
+```
+
+### 一键删除文档（dry-run）
+
+```powershell
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --reason "过期文档"
+```
+
+### 交互式全权限 QA
+
+```powershell
+Set-Location "your\path\to\brain-base的父目录\brain-base"; claude --plugin-dir . --agent brain-base:qa-agent --dangerously-skip-permissions
 ```
 
 ---
@@ -651,6 +774,110 @@ claude --plugin-dir . --agent brain-base:organize-agent --dangerously-skip-permi
 ### 12.5 为什么不走计划任务
 
 固化层的写入、刷新、反馈处理都是**事件驱动**的（用户提问 / 满意回答 / 反馈），不需要计划任务。`crystallize-lint` 在会话中手动触发即可，无需定时跑。
+
+---
+
+## 12.5 Docker 数据迁移与存储管理
+
+### 12.5.1 从旧部署迁移到新部署
+
+如果你之前只启动了 Milvus 三件套（`etcd + minio + standalone`），现在要迁移到 Docker 一键部署（含 brain-base 容器）：
+
+**步骤 1：保留旧数据**
+
+旧部署的知识库数据分布在两个地方：
+
+1. **文件系统数据**（`data/` 目录）：raw 文档、chunks、conversations、crystallized、lifecycle-audit 等
+2. **Milvus 向量数据**（`volumes/milvus/` 目录）：embedding 向量索引
+
+**步骤 2：迁移文件系统数据**
+
+```powershell
+# 旧部署的 data/ 目录直接复制到新部署的挂载路径
+# docker-compose.yml 默认挂载：./data:/app/data
+Copy-Item -Recurse "旧路径\brain-base\data" "新路径\brain-base\data"
+```
+
+**步骤 3：迁移 Milvus 向量数据**
+
+```powershell
+# Milvus 数据在 volumes/milvus/ 下，直接复制即可
+Copy-Item -Recurse "旧路径\brain-base\volumes\milvus" "新路径\brain-base\volumes\milvus"
+Copy-Item -Recurse "旧路径\brain-base\volumes\etcd" "新路径\brain-base\volumes\etcd"
+Copy-Item -Recurse "旧路径\brain-base\volumes\minio" "新路径\brain-base\volumes\minio"
+```
+
+**步骤 4：启动新部署**
+
+```powershell
+docker compose up -d
+docker compose exec brain-base python bin/brain-base-cli.py health
+```
+
+如果 Milvus 数据迁移成功，`search` 应能立即召回旧文档。如果 Milvus 数据损坏或版本不兼容，可从文件系统重建：
+
+```powershell
+# 重建 Milvus 索引（从 chunks 文件重新入库）
+docker compose exec brain-base python bin/milvus-cli.py drop-collection --confirm
+docker compose exec brain-base python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/*.md"
+```
+
+### 12.5.2 限制 Docker 存储无限扩张
+
+Docker 卷默认无大小限制，长期运行会持续增长。控制策略：
+
+**1. Milvus 自动 Compaction（默认已开启）**
+
+Milvus standalone 默认开启 `dataCoord.compaction.enable=true`，会自动合并小 segment。可在 `docker-compose.yml` 的 standalone 环境变量中调整：
+
+```yaml
+environment:
+  DATAcoord_COMPACTION_EXPIRED_TTL: "86400"   # 过期数据 compaction 间隔（秒）
+  DATAcoord_COMPACTION_CLEANUP_TIMEOUT: "300"  # compaction 后清理超时
+```
+
+**2. 定期清理过期文档**
+
+由上层 Agent 或 cron 定期执行 `remove-doc`：
+
+```powershell
+# dry-run 查看要删除的文档
+python bin/brain-base-cli.py remove-doc --doc-id <OLD_DOC_ID> --reason "过期"
+
+# 确认删除
+python bin/brain-base-cli.py remove-doc --doc-id <OLD_DOC_ID> --confirm --reason "定期清理"
+```
+
+**3. WSL2 磁盘限制（Windows 用户）**
+
+在 `%USERPROFILE%\.wslconfig` 中设置：
+
+```xml
+<wslconfig>
+  <storageLimit>50GB</storageLimit>
+</wslconfig>
+```
+
+重启 WSL 后生效。当 Docker 数据接近上限时需主动清理 `volumes/` 和 `data/`。
+
+**4. 手动清理模型缓存**
+
+模型缓存（bge-m3 ~1.4GB + MinerU ~2GB + Playwright ~500MB）不会自动增长，但可在确认不再需要时删除：
+
+```powershell
+# 删除模型缓存（下次启动会重新下载）
+Remove-Item -Recurse volumes\huggingface
+Remove-Item -Recurse volumes\mineru
+Remove-Item -Recurse volumes\playwright
+```
+
+**5. 监控存储用量**
+
+```powershell
+# 查看各卷占用
+Get-ChildItem -Recurse data | Measure-Object -Property Length -Sum
+Get-ChildItem -Recurse volumes | Measure-Object -Property Length -Sum
+```
 
 ---
 
