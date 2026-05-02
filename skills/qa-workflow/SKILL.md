@@ -144,7 +144,7 @@ qa-agent 在执行本 workflow 前，**必须先调用 `TodoList` 工具**，按
 | `hit_fresh` | hot 层命中且未超 TTL | 直接返回 `answer_markdown`，在开头附标注 `> 📦 来自自进化整理层固化答案（skill_id: ..., revision: N, 最后确认 YYYY-MM-DD）`，**结束本次 qa-workflow**，不走后续步骤 |
 | `hit_stale` | hot 层命中但已超 TTL | 通过 `Agent` tool 呼叫 `organize-agent` 的 refresh 模式，organize-agent 携带 `execution_trace` + `pitfalls` 调 get-info-agent 补库，补库完成后本 skill 从步骤 1 重跑生成答案，最终回答开头附标注 `> 🔄 固化答案已超 TTL，本轮已自动刷新（skill_id: ..., revision: N）`；若刷新失败，降级返回旧答案并标 `> ⚠️ ...最近一次刷新失败...` |
 | `cold_promoted` | cold 层命中且刚达到晋升阈值，已自动 promote 到 hot | 视同 `hit_fresh`，但标注改为 `> ⬆️ 来自自进化整理层固化答案（skill_id: ..., 本轮由 cold 层晋升, hit_count 达到阈值）` |
-| `cold_observed` | cold 层命中但未达晋升阈值，hit_count +1 已记录 | **不直接返回**；把 `cold_evidence_summary` 作为辅助证据携带进入步骤 1，走完整 RAG 流程。最终回答时把冷藏摘要作为一条候选证据纳入证据表（按 `extracted` 类型处理） |
+| `cold_observed` | cold 层命中但未达晋升阈值，hit_count +1 已记录 | **不直接返回**；把 `cold_evidence_summary` 作为辅助证据携带进入步骤 1，走完整 RAG 流程。最终回答时把冷藏摘要作为一条候选证据纳入证据表（按 `community` 类型处理） |
 | `miss` | hot 和 cold 层都无命中 | 继续走步骤 1 以后的完整 RAG 流程 |
 | `degraded` | 固化层读取失败或损坏 | 静默进入 `miss` 分支，写日志，**不阻断** qa-workflow |
 

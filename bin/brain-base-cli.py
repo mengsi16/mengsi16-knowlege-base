@@ -296,6 +296,27 @@ def _build_ingest_file_prompt(paths: list[str], section_path: str) -> str:
     return "\n".join(lines)
 
 
+def _build_enrich_chunks_prompt(doc_ids: list[str]) -> str:
+    lines = [
+        "## 任务",
+        "对以下 doc_id 的 chunk 文件执行 enrichment 补填（title/summary/keywords/questions），然后重新入库。",
+        "",
+        "## doc_id 列表",
+    ]
+    lines.extend(f"- {d}" for d in doc_ids)
+    lines.extend(
+        [
+            "",
+            "## 执行要求",
+            "1. 扫描 chunk 文件，检测哪些缺少 enrichment 字段。",
+            "2. 对缺失的 chunk 逐个生成 enrichment，写回 frontmatter。",
+            "3. 删除 Milvus 旧行，重新 ingest。",
+            "4. 返回 JSON 摘要（doc_id / chunks_scanned / chunks_enriched / milvus_rows_deleted / milvus_rows_inserted / failed_chunks）。",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _build_remove_doc_prompt(
     doc_ids: list[str],
     urls: list[str],
@@ -689,6 +710,28 @@ def cmd_feedback(args: argparse.Namespace) -> int:
     return _print_json(payload, 0 if result["ok"] else result["exit_code"] or 1)
 
 
+def cmd_enrich_chunks(args: argparse.Namespace) -> int:
+    claude_bin = _resolve_claude_bin(args.claude_bin)
+    session_id = _ensure_uuid(args.session_id)
+    prompt = _build_enrich_chunks_prompt(args.doc_id)
+    result = _run_claude_agent(
+        agent="brain-base:chunk-enrichment-agent",
+        prompt=prompt,
+        session_id=session_id,
+        resume_session_id=None,
+        plugin_dir=ROOT_DIR,
+        claude_bin=claude_bin,
+        output_format=args.output_format,
+        model=getattr(args, 'model', None),
+    )
+    payload = {
+        "command": "enrich-chunks",
+        "session_id": session_id,
+        "result": result,
+    }
+    return _print_json(payload, 0 if result["ok"] else result["exit_code"] or 1)
+
+
 def cmd_remove_doc(args: argparse.Namespace) -> int:
     if not (args.doc_id or args.url or args.sha256):
         return _print_json(
@@ -822,6 +865,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_feedback.add_argument("--model", default=None, help="覆盖 claude-code 默认模型")
     p_feedback.add_argument("--output-format", default="stream-json", choices=["stream-json", "text", "json"])
     p_feedback.set_defaults(func=cmd_feedback)
+
+    p_enrich = sub.add_parser("enrich-chunks", help="对已有 chunk 文件补填 enrichment（title/summary/keywords/questions）并重新入库")
+    p_enrich.add_argument("--doc-id", action="append", required=True, help="要 enrichment 的 doc_id；可重复")
+    p_enrich.add_argument("--session-id", default=None)
+    p_enrich.add_argument("--claude-bin", default=None)
+    p_enrich.add_argument("--model", default=None, help="覆盖 claude-code 默认模型")
+    p_enrich.add_argument("--output-format", default="stream-json", choices=["stream-json", "text", "json"])
+    p_enrich.set_defaults(func=cmd_enrich_chunks)
 
     p_remove_doc = sub.add_parser(
         "remove-doc",

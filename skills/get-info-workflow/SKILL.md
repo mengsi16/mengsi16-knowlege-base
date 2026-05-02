@@ -279,17 +279,18 @@ LLM 输出四分类结果：`official-high` / `official-low` / `community` / `di
 这一层不直接承担分块和落盘细节，而是要求：
 
 1. 把结构化文档草稿交给 `knowledge-persistence`。
-2. 由它按 5000 字符阈值规则完成分块（≤ 5000 字符整篇为 1 块；> 5000 字符按语义边界切，每块上限 5000）。
-3. 在每个 chunk Markdown 落盘**之前**，由它对该 chunk 调用 LLM 生成 3〜5 条合成 QA 问题，并以 JSON inline 数组形式写入 chunk frontmatter 的 `questions` 字段。
+2. 由它调用 `bin/chunker.py` 生成基础 chunk Markdown。
+3. 由它调用 `chunk-enrichment` skill 对每个 chunk 生成 `title` / `summary` / `keywords` / 3〜5 条合成 QA 问题，并写回 chunk frontmatter。
 4. 由它完成 raw/chunks 双落盘。
 5. 由它调用 `python bin/milvus-cli.py ingest-chunks` 完成 hybrid 入库——CLI 会为每个 chunk 写入 1 行 `kind=chunk` + 每条 question 1 行 `kind=question`，全部共享 `chunk_id`。
 6. 由它更新 `keywords.db` 与 `priority.json`。
 
 入库顺序硬约束：
 
-1. **生成 chunk 文本 → 生成合成 QA → 写入 chunk frontmatter → 写盘 → 调 CLI 入库**。
+1. **写 raw → 调 chunker.py 生成 chunk → 调 chunk-enrichment 填充 frontmatter → 调 CLI 入库**。
 2. 不允许先入库再回填 questions（那会让 question 行漏掉）。
-3. 不允许跳过合成 QA 直接入库（除非该 chunk 是空目录页，且明确写 `questions: []`）。
+3. 不允许跳过 enrichment 直接入库（除非该 chunk 是空目录页，且明确写 `questions: []`）。
+4. 如果 chunk 文件已存在但 enrichment 缺失，先调 `chunk-enrichment` 补填再入库；也可通过 `brain-base-cli enrich-chunks --doc-id <doc_id>` 独立触发。
 
 ### 步骤9: 返回给 QA Agent
 
@@ -308,7 +309,7 @@ LLM 输出四分类结果：`official-high` / `official-low` / `community` / `di
 2. 有正文抓取结果。
 3. 若含非官方来源，有提炼记录（标注了来源 URL）。
 4. 有 raw Markdown。
-5. 有 chunk Markdown（已遵守 5000 字符阈值规则）。
+5. 有 chunk Markdown（由 `bin/chunker.py` 生成）。
 6. 每个 chunk 的 frontmatter 含 `questions` 字段（除空目录页外应有 3〜5 个问题）；community 类型 chunk 的 frontmatter 还必须含 `source_type: community` 和 `url` 字段。
 7. 有 Milvus 入库记录，且报告同时含 `chunk_rows` 与 `question_rows` 计数。
 8. 有 `keywords.db` 更新。

@@ -186,10 +186,10 @@ python bin/brain-base-cli.py ingest-text \
 它的实现方式是：
 1. 临时把文本写成 `.md`
 2. 再走 `upload-agent`
-3. 从而继续复用 `knowledge-persistence` 的 LLM 语义分块与合成 QA
+3. 从而继续复用 `knowledge-persistence` 的 chunker.py 生成 chunk 与 LLM 信息富化
 
 这意味着：
-1. **不会绕过 Agent/LLM 分块链路**
+1. **不会绕过 knowledge-persistence 持久化链路**
 2. 这类内容默认按 `user-upload` 路径处理
 3. 如果你要保持网页来源语义，应优先使用 `ingest-url`
 

@@ -217,16 +217,17 @@ keywords: <逗号分隔，由用户提供或后续 organize 补全>
 
 把上一步写好 frontmatter 的 raw MD 列表交给 `knowledge-persistence`，由它完成：
 
-1. 按 5000 字符阈值规则分块（≤ 5000 字符整篇为 1 块；> 5000 字符按语义边界切）。
-2. 为每个 chunk 生成 3〜5 条合成 QA，写入 chunk frontmatter 的 `questions` 字段。
+1. 调用 `bin/chunker.py` 生成基础 chunk Markdown。
+2. 调用 `chunk-enrichment` skill 为每个 chunk 生成 `title` / `summary` / `keywords` / 3〜5 条合成 QA，写入 chunk frontmatter。
 3. raw/chunks 双落盘（raw 已存在则保留，chunks 新建）。
 4. 调 `python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/<doc_id>-*.md"` 完成 hybrid 入库。
 
 **入库顺序硬约束**（与 get-info 一致）：
 
-1. 生成 chunk 文本 → 生成合成 QA → 写入 chunk frontmatter → 写盘 → 调 CLI 入库。
+1. 写 raw → 调 chunker.py 生成 chunk → 调 chunk-enrichment 填充 frontmatter → 调 CLI 入库。
 2. 不允许先入库再回填 questions。
-3. 不允许跳过合成 QA 直接入库（除非该 chunk 是空目录页，且明确写 `questions: []`）。
+3. 不允许跳过 enrichment 直接入库（除非该 chunk 是空目录页，且明确写 `questions: []`）。
+4. 如果 chunk 文件已存在但 enrichment 缺失，先调 `chunk-enrichment` 补填再入库；也可通过 `brain-base-cli enrich-chunks --doc-id <doc_id>` 独立触发。
 
 ### 步骤 6: 返回入库摘要
 

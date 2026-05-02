@@ -31,7 +31,7 @@ disable-model-invocation: false
 本 skill 不负责：
 
 1. 把网页内容清洗成最终知识文本。
-2. LLM 分块。
+2. chunk 生成与信息富化。
 3. Milvus 或本地文件持久化。
 
 ## 3. 使用规则

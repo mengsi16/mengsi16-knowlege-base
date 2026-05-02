@@ -59,6 +59,20 @@ def collection_has_field(collection: Collection, field_name: str) -> bool:
     return any(field.name == field_name for field in collection.schema.fields)
 
 
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    """按 UTF-8 字节长度截断字符串，确保不超过 max_bytes"""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    # 从 max_bytes 处截断，避免截断多字节字符中间
+    truncated = encoded[:max_bytes]
+    try:
+        return truncated.decode("utf-8")
+    except UnicodeDecodeError:
+        # 去掉最后一个不完整的多字节字符
+        return truncated[:max_bytes - (truncated[-1] >> 6 & 0b11 == 0b10 and 1 or truncated[-1] >> 5 & 0b110 == 0b110 and 2 or 1)].decode("utf-8", errors="ignore")
+
+
 def _first_heading(markdown: str) -> str:
     for line in markdown.splitlines():
         stripped = line.strip()
@@ -151,7 +165,8 @@ def _parse_markdown_frontmatter(
     if isinstance(section_path, list):
         section_path = " / ".join(str(item) for item in section_path)
 
-    title = metadata.get("title") or _first_heading(content)
+    title = _truncate_utf8(metadata.get("title") or _first_heading(content), 1024)
+    section_path = _truncate_utf8(section_path, 1024)
     summary = metadata.get("summary") or _first_paragraph(content)
     keywords = metadata.get("keywords", "")
 
