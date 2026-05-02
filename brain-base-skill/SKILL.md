@@ -6,55 +6,326 @@ disable-model-invocation: false
 
 # brain-base
 
-本 skill 是 **brain-base 知识库 Agent 的外部调用说明书**，部署在 `~/.claude/skills` 或 `~/.codex/skills`，供任何 Claude Code / Codex Agent 读取。它不执行检索本身，而是告诉调用方：
+本 skill 是 **brain-base 的强外部调用手册**，面向比它更强的 Agent Loop / 工程编排器 / 多 Agent 系统。默认目标不是“让上层 Agent 手拼一堆 `claude -p` 命令”，而是：
+1. 先把 brain-base 当成一个**稳定的知识底座**
+2. 优先通过 `bin/brain-base-cli.py` 调用
+3. 把 `qa-agent / get-info-agent / upload-agent` 的复杂细节收敛在 CLI 后面
+4. 让上层 Agent 只关心 **search / ask / ingest / feedback / health** 这五类意图
 
-1. 什么时候该调知识库 Agent（问答 vs 上传）
-2. 怎么拼 `claude -p` 命令行
-3. 为什么必须带 `--dangerously-skip-permissions`
-4. Prompt 怎么写效果最好
-5. 输出长什么样、怎么解读
-6. **固化反馈怎么发**（`-c` 参数）
-7. 出错了怎么排查
+## 1. 调用原则
 
-## 1. 适用场景
+### 1.1 默认优先级
 
-brain-base 对外暴露**两个并列入口 Agent**，调用方按意图选择其一：
+1. **首选 `brain-base-cli`**：这是给外部强 Agent 用的稳定 JSON 边界。
+2. **`claude -p` 直调仅作兜底/调试**：当你需要人工排查、验证底层 agent 行为时再直调。
+3. **不要自己重写 brain-base 内部工作流**：不要在外部 Agent 里重做“L0-L3 改写 / 证据判断 / 分块 / 合成 QA / 固化反馈”这些逻辑。
+4. **检索和问答分开**：只想拿候选证据 → `search`；需要完整 Agentic RAG 回答 → `ask`。
+5. **URL 入库和本地文件入库分开**：URL → `ingest-url`；本地文件 → `ingest-file` / `ingest-text`。
 
-### 1.1 问答入口（`qa-agent`）
-
-满足任一即触发：
-
-1. 需要查询个人知识库中已有的文档、配置、流程、概念。
-2. 需要验证某个事实是否在知识库中有记录。
-3. 需要检索与某主题相关的已有 chunk 或 raw 文档。
-4. 用户或上层 Agent 明确要求"先查本地知识库"。
-5. 需要基于已有知识做方案比较、流程说明、术语解释。
-
-### 1.2 上传入库入口（`upload-agent`）
+### 1.2 什么情况该调 brain-base
 
 满足任一即触发：
+1. 需要复用已有知识库做问答、对比、方案分析、术语解释。
+2. 需要把外部网页、GitHub 项目页、README、官方文档补进知识库。
+3. 需要把本地 PDF / DOCX / MD / TXT / 代码文件沉淀进知识库。
+4. 需要让知识随着问答自动积累，而不是每次都从零检索。
+5. 需要把 RAG 能力交给一个专门的知识系统，而不是在上层业务 Agent 内部重复实现。
 
-1. 调用方手上有**本地文件**（PDF / DOCX / PPTX / XLSX / LaTeX / TXT / MD / PNG / JPG），希望把它的内容沉淀进 brain-base 供后续 qa-agent 检索。
-2. 用户或上层 Agent 明确要求"把这份文档导入 / 加入 / 上传到知识库"。
-3. 需要批量把一个目录下的多份本地文档一次性入库。
+### 1.3 不该调 brain-base 的情况
 
-**关键区别**：
+1. 纯闲聊或与知识库无关的对话。
+2. 用户只想临时读一个文件但**不要求入库**。
+3. 调用方明确要求“直接联网搜索，不写知识库”。
+4. 只是想做极轻量字符串匹配，不需要 RAG / 入库 / 积累。
 
-| 输入形态 | 入库意图 | 应调用 |
-|---------|---------|--------|
-| 本地文件路径 | 有 | `upload-agent` |
-| URL / 检索主题 | 有 | `qa-agent`（它会在证据不足时自动触发 `get-info-agent` 联网补库） |
-| 任何 | 无，只想检索 | `qa-agent` |
+## 2. 推荐外部接口：`brain-base-cli`
 
-### 1.3 不适用场景
+brain-base 新增统一入口：
+```bash
+python bin/brain-base-cli.py <command> [options]
+```
+所有命令都输出 **JSON**，适合 Agent Loop / Python / Shell / 调度器直接消费。
 
-1. 纯闲聊或与知识库无关的请求。
-2. 用户只要求阅读 / 总结本地文件但**不入库** → 不触发 brain-base，直接回答即可。
-3. 用户明确要求直接联网搜索而不经过知识库 → 不触发 brain-base。
+### 2.1 命令矩阵
 
-## 2. 调用方式
+| 意图 | 命令 | 是否走 LLM/Agent | 典型用途 |
+|------|------|------------------|----------|
+| 健康检查 | `health` | 否 | 启动前探测 `claude` / Milvus / doc-converter |
+| 纯检索 | `search` | 否 | 拿候选 chunk，不生成答案 |
+| 去重检查 | `exists` | 否 | 按 `doc_id` / `url` / `sha256` 判断是否已在库 |
+| 完整问答 | `ask` | 是（`qa-agent`） | Agentic RAG：检索 → 判断 → 补库 → 回答 → 自检 |
+| URL 补库 | `ingest-url` | 是（`get-info-agent`） | GitHub 项目页、README、官方文档、网页知识入库 |
+| 本地文件入库 | `ingest-file` | 是（`upload-agent`） | PDF / DOCX / MD / TXT / 代码文件入库 |
+| 文本直入库 | `ingest-text` | 是（经临时 `.md` 转 `upload-agent`） | 上层 Agent 已拿到 Markdown / README 正文，不想先自己落盘 |
+| 固化反馈 | `feedback` | 是（`qa-agent` resume） | 对上一轮 `ask` 结果发送 `confirmed/rejected/supplement` |
+| 多轮续聊 | `resume` | 是（`qa-agent --resume`） | 基于同一 session_id 继续对话，复用上下文 |
+| 会话历史 | `history` | 否（纯文件读取） | 列出最近会话 / 回放指定 session 事件流 |
+| 删除文档 | `remove-doc` | 是（`lifecycle-agent`） | 跨存储层一致性删除（dry-run + confirm 两阶段） |
 
-### 2.1 问答调用（qa-agent）
+### 2.2 最核心的调用选择
+
+| 你手上有什么 | 想要什么 | 应调用 |
+|---------------|----------|--------|
+| 一个问题 | 完整回答 | `ask` |
+| 一个问题 | 只要候选证据 | `search` |
+| 一个 URL | 写入知识库 | `ingest-url` |
+| 一个本地文件路径 | 写入知识库 | `ingest-file` |
+| 一段 Markdown / README 正文 | 写入知识库 | `ingest-text` |
+| 一个 URL / doc_id / sha256 | 先判断是否已入库 | `exists` |
+| 上一轮 ask 的 `session_id` | 确认/拒绝/补充固化 | `feedback` |
+| 上一轮 ask 的 `session_id` + 续问 | 继续对话 | `resume` |
+| 想看历史对话 | 列出/回放会话 | `history` |
+| 一个 doc_id 要删除 | 清理过期/重复文档 | `remove-doc` |
+
+## 3. 命令详解
+
+### 3.1 `health`
+
+用途：启动前一次性探测 brain-base 基础设施。
+```bash
+python bin/brain-base-cli.py health --require-local-model --smoke-test
+```
+返回至少包含：
+1. `claude.available`
+2. `milvus` 运行状态
+3. `doc_converter` 运行状态
+
+适合：系统启动自检、CI 冒烟检查、Agent Loop 开机前探测。
+
+### 3.2 `search`
+
+用途：**纯检索**，不生成答案。
+```bash
+python bin/brain-base-cli.py search \
+  --query "claude code subagent" \
+  --query "how to create claude code subagent"
+```
+特点：
+1. 直接复用 `milvus-cli.py multi-query-search`
+2. 默认启用 cross-encoder 重排序
+3. 返回结构化候选列表，适合上层 Agent 自己做决策
+
+适合：
+1. “先查库里有没有，再决定要不要 ask”
+2. 业务 Agent 想自己做多路融合
+3. 爬虫入库后做验证回查
+
+### 3.3 `exists`
+
+用途：入库前去重。
+```bash
+python bin/brain-base-cli.py exists --url "https://github.com/owner/repo"
+python bin/brain-base-cli.py exists --doc-id "owner-repo-2026-04-29"
+python bin/brain-base-cli.py exists --sha256 "<64位摘要>"
+```
+适合：
+1. GitHub Trending / RSS / 监控型 Agent 每天重复抓取前做前置判断
+2. 本地文件入库前做哈希查重
+
+### 3.4 `ask`
+
+用途：走完整 `qa-agent` 链路。
+```bash
+python bin/brain-base-cli.py ask "Claude Code 的 subagent 怎么配置？"
+```
+`ask` 背后执行的是：
+```bash
+claude -p \
+  --output-format text \
+  --session-id <uuid> \
+  --plugin-dir <BRAIN_BASE_PATH> \
+  --agent brain-base:qa-agent \
+  --dangerously-skip-permissions \
+  "<prompt>"
+```
+返回 JSON 中最关键的字段：
+1. `session_id`：后续发 `feedback` 必须用它
+2. `result.stdout`：qa-agent 的最终 Markdown 回答
+3. `feedback_recommended`：`true` 表示上层 Agent 后续应根据用户反应发固化反馈
+
+如果你**明确不要联网补库**：
+```bash
+python bin/brain-base-cli.py ask "问题内容" --no-supplement
+```
+### 3.5 `ingest-url`
+
+用途：把网页 / GitHub 项目页 / README / 文档页补进知识库。
+```bash
+python bin/brain-base-cli.py ingest-url \
+  --url "https://github.com/owner/repo" \
+  --url "https://github.com/owner/repo/blob/main/README.md" \
+  --topic "GitHub trending project deep ingest" \
+  --latest
+```
+设计意图：
+1. 给外部 Agent 一个**精确补库**入口
+2. 适合像 `github-trending-monitor` 这种“自己抓榜单，但项目详情页交给 brain-base” 的架构
+3. 返回的是入库摘要，不是最终问答
+
+### 3.6 `ingest-file`
+
+用途：本地文件入库。
+```bash
+python bin/brain-base-cli.py ingest-file \
+  --path "E:\\docs\\paper.pdf" \
+  --path "E:\\docs\\notes.md"
+```
+注意：
+1. 这是 `upload-agent` 正常路径
+2. PDF / DOCX / PPTX / XLSX / 图片仍走 MinerU
+3. `.md/.txt/.py/.ts` 等也统一走 upload 路径，保证后续分块 / 合成 QA / Milvus 入库一致
+
+### 3.7 `ingest-text`
+
+用途：上层 Agent 已经拿到 Markdown / README 正文，但又不想自己构造 raw/frontmatter/分块。
+```bash
+python bin/brain-base-cli.py ingest-text \
+  --title "repo-readme" \
+  --content-file "E:\\tmp\\repo-readme.md"
+```
+它的实现方式是：
+1. 临时把文本写成 `.md`
+2. 再走 `upload-agent`
+3. 从而继续复用 `knowledge-persistence` 的 LLM 语义分块与合成 QA
+
+这意味着：
+1. **不会绕过 Agent/LLM 分块链路**
+2. 这类内容默认按 `user-upload` 路径处理
+3. 如果你要保持网页来源语义，应优先使用 `ingest-url`
+
+### 3.8 `resume`
+
+用途：基于同一 session_id 继续对话，复用 qa-agent 上下文。
+```bash
+python bin/brain-base-cli.py resume --session-id <ID> "继续刚才的话题"
+```
+特点：
+1. 底层走 `claude --resume <session_id>`
+2. 事件自动追加到 `data/conversations/<session_id>.jsonl`
+3. 适合 Agent Loop 需要多轮追问的场景
+
+### 3.9 `history`
+
+用途：查看会话历史。
+```bash
+# 列出最近会话
+python bin/brain-base-cli.py history
+
+# 回放指定 session
+python bin/brain-base-cli.py history --session-id <ID>
+```
+特点：
+1. 纯文件读取，不触发 LLM
+2. 返回 session 列表或指定 session 的事件流
+3. 适合 Agent Loop 做上下文回溯
+
+### 3.10 `remove-doc`
+
+用途：跨存储层一致性删除文档。
+```bash
+# dry-run：只输出删除清单
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --reason "过期文档"
+
+# confirm：执行删除
+python bin/brain-base-cli.py remove-doc --doc-id <DOC_ID> --confirm --reason "确认删除"
+```
+特点：
+1. 默认 dry-run，需 `--confirm` 才真删
+2. 编排 lifecycle-workflow：Milvus 行 → raw/chunks/uploads 文件 → doc2query-index → crystallized index 标记 rejected → 审计日志
+3. 适合 Agent Loop 定期清理过期/重复文档
+
+### 3.11 `feedback`
+
+用途：对上一轮 `ask` 发送固化反馈。
+```bash
+python bin/brain-base-cli.py feedback \
+  --session-id "<ask返回的session_id>" \
+  --status confirmed
+```
+可选状态：
+1. `confirmed`
+2. `rejected`
+3. `supplement`
+
+补充信息示例：
+```bash
+python bin/brain-base-cli.py feedback \
+  --session-id "<session_id>" \
+  --status supplement \
+  --note "用户补充：这个配置只适用于 Claude Code 1.0.85 之后"
+```
+## 4. 强 Agent 的推荐调用策略
+
+### 4.1 最推荐的默认流程
+```text
+启动前：health
+
+要回答问题：
+  1. 可选先 search
+  2. 再 ask
+  3. 用户未否定 → feedback confirmed
+  4. 用户否定 → feedback rejected
+  5. 用户补充 → feedback supplement
+
+要补库：
+  1. 可选先 exists
+  2. URL → ingest-url
+  3. 本地文件 → ingest-file
+  4. 内存里的 Markdown/README → ingest-text
+
+要续聊：
+  1. resume --session-id <ID> "续问内容"
+  2. history 查看历史
+
+要删除文档：
+  1. remove-doc --doc-id <ID> --reason "原因"（dry-run）
+  2. remove-doc --doc-id <ID> --confirm --reason "确认"（执行）
+```
+### 4.2 业务场景映射
+
+#### 场景 A：Agent Loop 问答
+
+1. `ask`
+2. 把 `result.stdout` 当最终回答正文
+3. 记录 `session_id`
+4. 根据用户下一轮反应发 `feedback`
+
+#### 场景 B：监控/爬虫型系统补库（如 github-trending-monitor）
+
+1. 先抓索引页/榜单页（业务系统自己负责）
+2. 对每个项目 URL 先 `exists --url`
+3. 不存在或需刷新 → `ingest-url`
+4. 入库后必要时 `search` 验证可检索性
+5. 过期项目 → `remove-doc --doc-id <ID> --confirm` 清理
+6. 需要对项目问答 → `ask` + `resume` 多轮对话
+
+#### 场景 C：外部 Agent 已经拿到 README 正文
+
+1. README 在内存里 → `ingest-text`
+2. 若想保持 URL 语义与 community/official 路径 → 尽量改用 `ingest-url`
+
+#### 场景 D：只想做“知识检索候选”而不是完整问答
+
+1. 用 `search`
+2. 外部 Agent 自己消费结果并做业务裁决
+3. 不要为了拿候选证据去调 `ask`
+
+## 5. 为什么不建议外部 Agent 直接手拼 `claude -p`
+
+因为你本来是在造一个**知识系统**，不是在上层业务系统里重复处理这些细节：
+1. `session_id` 管理
+2. `--resume` / 固化反馈
+3. `get-info-agent` / `upload-agent` / `qa-agent` 的选择
+4. 统一 JSON 返回结构
+5. Windows 下子进程参数拼装
+
+`brain-base-cli` 已经把这些边界固定住了。对更强的 Agent 来说，最值钱的不是“能不能拼命令”，而是“有没有一个稳定协议可调度”。
+
+## 6. `claude -p` 直调（仅兜底/调试）
+
+如果你确实要跳过 `brain-base-cli`，可直接调用：
+
+### 6.1 问答
 
 ```bash
 claude -p "<问题内容>" \
@@ -63,368 +334,127 @@ claude -p "<问题内容>" \
   --dangerously-skip-permissions
 ```
 
-### 2.2 上传入库调用（upload-agent）
+### 6.2 URL 补库
 
 ```bash
-claude -p "<上传指令，含文件路径>" \
+claude -p "把以下 URL 补充进 brain-base 知识库，不需要输出最终问答，只返回入库摘要：<url>" \
+  --plugin-dir "<BRAIN_BASE_PATH>" \
+  --agent brain-base:get-info-agent \
+  --dangerously-skip-permissions
+```
+
+### 6.3 本地文件入库
+
+```bash
+claude -p "把以下本地文档入库到 brain-base：<绝对路径>" \
   --plugin-dir "<BRAIN_BASE_PATH>" \
   --agent brain-base:upload-agent \
   --dangerously-skip-permissions
 ```
 
-Prompt 里必须包含**具体的本地文件路径**（绝对或相对于调用方工作目录的相对路径都可以），示例：
+### 6.4 固化反馈
 
+推荐用 `brain-base-cli feedback`。如果你必须手调：
 ```bash
-claude -p "请把以下本地文件入库：/home/me/papers/knowledge-distillation.pdf" \
-  --plugin-dir "$BRAIN_BASE_PATH" \
-  --agent brain-base:upload-agent \
+claude -p --resume "<session_id>" "用户未否定，确认固化上一轮答案" \
+  --plugin-dir "<BRAIN_BASE_PATH>" \
+  --agent brain-base:qa-agent \
   --dangerously-skip-permissions
 ```
+## 7. 输出解读
 
-批量：
+### 7.1 `brain-base-cli` 的统一 JSON 壳
 
-```bash
-claude -p "请把目录 /home/me/papers/ 下所有 PDF 入库" \
-  --plugin-dir "$BRAIN_BASE_PATH" \
-  --agent brain-base:upload-agent \
-  --dangerously-skip-permissions
-```
+对外强约束：CLI 总是返回 JSON。
 
-### 2.3 参数说明
+对于 `ask / ingest-url / ingest-file / ingest-text / feedback` 这类 agent-backed 命令，重点关注：
+1. `session_id`
+2. `result.ok`
+3. `result.exit_code`
+4. `result.stdout`
+5. `result.stderr`
 
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `-p` | ✅ | 传给 agent 的 prompt。qa-agent 收的是问题，upload-agent 收的是上传指令（含文件路径） |
-| `-c` | 固化反馈时必填 | 继续上一次对话（continue），用于发送固化反馈（**仅 qa-agent 需要**） |
-| `--plugin-dir` | ✅ | brain-base 项目的**绝对路径**（含 `.claude-plugin/` 的目录） |
-| `--agent` | ✅ | `brain-base:qa-agent`（问答）或 `brain-base:upload-agent`（上传入库） |
-| `--dangerously-skip-permissions` | ✅ | **必须携带**，原因见下方 |
+其中：
+1. `stdout` 是底层 Agent 的原始 Markdown 报告/回答
+2. `stderr` 是底层 `claude` CLI 或子进程 stderr
+3. `session_id` 是后续反馈或继续调度的关键主键
 
-### 如何确定 brain-base 路径
+### 7.2 什么时候要发反馈
 
-当 brain-base 作为**项目级项目**（而非安装在 `~/.claude/plugins/`）时，调用方需要知道 brain-base 的绝对路径。推荐以下方案：
+只对 `ask` 需要反馈，规则如下：
+| 用户表现 | 应发什么 |
+|----------|----------|
+| 用户未否定、继续追问、默认接受 | `feedback --status confirmed` |
+| 用户明确说“不对/不满意/过时” | `feedback --status rejected` |
+| 用户主动补充新事实 | `feedback --status supplement --note ...` |
 
-#### 方案 A：环境变量（推荐）
+### 7.3 什么时候不用发反馈
 
-调用方项目在 `.env` 或启动脚本中设置：
+1. `search`
+2. `exists`
+3. `health`
+4. `ingest-url`
+5. `ingest-file`
+6. `ingest-text`
 
+## 8. 前置条件
+
+调用前应确认：
+1. `claude` CLI 已安装并可执行
+2. Milvus 正在运行
+3. bge-m3 runtime 可用
+4. 若走 upload 路径：MinerU / pandoc 按需可用
+5. 调用方知道 brain-base 项目路径，或直接在 brain-base 仓库根执行 `python bin/brain-base-cli.py ...`
+
+建议固定环境变量：
 ```bash
 export BRAIN_BASE_PATH="/absolute/path/to/brain-base"
+export BRAIN_BASE_CLAUDE_BIN="claude"
 ```
-
-然后调用时引用：
-
-```bash
-claude -p "问题" \
-  --plugin-dir "$BRAIN_BASE_PATH" \
-  --agent brain-base:qa-agent \
-  --dangerously-skip-permissions
+## 9. 与内部工作流的关系
+```text
+外部强 Agent
+  └─ brain-base-cli
+       ├─ health / search / exists
+       │    └─ 直接复用 bin/milvus-cli.py / bin/doc-converter.py
+       ├─ ask
+       │    └─ qa-agent
+       │         ├─ qa-workflow
+       │         ├─ get-info-agent（按需自动触发）
+       │         └─ organize-agent（按规则自动固化，后续靠 feedback 更新状态）
+       ├─ ingest-url
+       │    └─ get-info-agent
+       │         ├─ get-info-workflow
+       │         ├─ web-research-ingest
+       │         ├─ playwright-cli-ops
+       │         ├─ knowledge-persistence
+       │         └─ update-priority
+       ├─ ingest-file / ingest-text
+       │    └─ upload-agent
+       │         ├─ upload-ingest
+       │         ├─ doc-converter
+       │         └─ knowledge-persistence
+       ├─ feedback
+       │    └─ qa-agent --resume <session_id>
+       ├─ resume
+       │    └─ qa-agent --resume <session_id> (续聊)
+       ├─ history
+       │    └─ 读取 data/conversations/*.jsonl
+       └─ remove-doc
+            └─ lifecycle-agent
+                 ├─ lifecycle-workflow
+                 ├─ milvus-cli delete-by-doc-ids
+                 └─ 审计日志 → data/lifecycle-audit.jsonl
 ```
-
-#### 方案 B：相对路径约定
-
-如果调用方项目与 brain-base 有固定的目录关系（如父子目录），可使用相对路径：
-
-```bash
-# 假设目录结构：
-# ~/projects/
-#   ├── brain-base/
-#   └── caller-project/
-
-claude -p "问题" \
-  --plugin-dir "../brain-base" \
-  --agent brain-base:qa-agent \
-  --dangerously-skip-permissions
-```
-
-#### 方案 C：通过 Claude Code 查找
-
-如果 brain-base 已作为 plugin 安装到 Claude Code，可以让 Claude Code 帮你找：
-
-```bash
-# 在 Claude Code 中询问：
-# "brain-base 插件安装在哪里？帮我返回它的绝对路径"
-```
-
-然后使用该路径进行调用。
-
-### 为什么必须 `--dangerously-skip-permissions`
-
-两个入口 Agent 在执行时都会触发文件系统与子进程调用：
-
-- **qa-agent** 可能触发 `get-info-agent`，后者会：
-  1. 启动 Playwright 浏览器抓取网页 → 需要文件写入权限
-  2. 调用 `milvus-cli.py ingest-chunks` → 需要执行 Python 脚本权限
-  3. 写入 `data/docs/raw/` 和 `data/docs/chunks/` → 需要文件创建权限
-- **upload-agent** 会：
-  1. 调用 `bin/doc-converter.py` → 执行 Python + 可能拉起 MinerU / pandoc 子进程
-  2. 归档原始文件到 `data/docs/uploads/<doc_id>/` → 文件复制权限
-  3. 写 `data/docs/raw/` 和 `data/docs/chunks/` → 文件创建权限
-  4. 调用 `milvus-cli.py ingest-chunks` → 执行 Python 脚本权限
-
-如果**不带** `--dangerously-skip-permissions`，Claude Code 会在每一步弹出权限确认对话框，导致：
-
-- 作为子进程被其他 Agent 调用时，无人响应确认 → 进程挂起或直接退出
-- 即使有人值守，频繁弹窗也会打断自动化流程
-
-因此，**从外部 Agent 调起 brain-base 的任一入口时都必须跳过权限确认**。
-
-## 3. Prompt 构造指南
-
-### 3.1 qa-agent 的 prompt（问答）
-
-qa-agent 接收的就是 `-p` 后面的字符串。为了让它高效工作，调用方应遵循以下格式：
-
-```
-## 问题
-<用户的核心问题，一句话>
-
-## 背景（可选）
-<为什么问这个问题、当前在做什么任务>
-
-## 时效要求（可选）
-<是否需要最新资料、是否有版本约束>
-```
-
-示例：
-
-```bash
-claude -p "## 问题
-Claude Code 的 subagent 怎么配置？yaml frontmatter 有哪些必填字段？
-
-## 背景
-我正在给一个 Claude Code 插件项目写 agent 定义文件，需要确认 subagent 的规范格式。
-
-## 时效要求
-需要 2025 年 4 月之后的资料" \
-  --plugin-dir "<BRAIN_BASE_PATH>" \
-  --agent brain-base:qa-agent \
-  --dangerously-skip-permissions
-```
-
-qa-agent Prompt 硬约束：
-
-1. **问题必须清晰**：qa-agent 会基于问题做 L0-L3 fan-out 改写，问题越清晰改写越精准。
-2. **不要在 prompt 里塞检索指令**：qa-agent 自己会决定用 Grep 还是 multi-query-search，调用方不需要指定。
-3. **不要在 prompt 里要求跳过补库**：如果本地证据不足，qa-agent 有权自动触发 get-info-agent 补库，这是设计意图。
-4. **如果只需要纯检索不需要补库**，在 prompt 里注明"仅检索本地已有资料，不需要联网补库"即可，qa-agent 会尊重此约束。
-
-### 3.2 upload-agent 的 prompt（上传入库）
-
-upload-agent 接收的是**上传指令**，最关键的信息是**具体文件路径**。推荐格式：
-
-```
-## 任务
-把以下本地文档入库到 brain-base。
-
-## 文件路径
-- /absolute/path/to/file1.pdf
-- /absolute/path/to/file2.docx
-（或给出目录：/absolute/path/to/folder/）
-
-## 可选元信息
-- 主题 slug: <自定义 slug，会进 doc_id>
-- section_path: 用户文档 / 论文 / 第一章
-- keywords: a, b, c
-```
-
-示例（单文件）：
-
-```bash
-claude -p "## 任务
-把以下本地文档入库到 brain-base。
-
-## 文件路径
-- /home/me/papers/knowledge-distillation.pdf
-
-## 可选元信息
-- 主题 slug: kd-hinton-2015
-- section_path: 用户文档 / 论文 / 知识蒸馏" \
-  --plugin-dir "$BRAIN_BASE_PATH" \
-  --agent brain-base:upload-agent \
-  --dangerously-skip-permissions
-```
-
-示例（目录批量）：
-
-```bash
-claude -p "把目录 /home/me/papers/ 下所有 PDF 入库，section_path 统一用'用户文档 / 论文'" \
-  --plugin-dir "$BRAIN_BASE_PATH" \
-  --agent brain-base:upload-agent \
-  --dangerously-skip-permissions
-```
-
-upload-agent Prompt 硬约束：
-
-1. **文件路径必须明确**：upload-agent 不会猜测路径；相对路径会相对于 `--plugin-dir`（即 brain-base 仓库根）解析。**建议用绝对路径**。
-2. **不要塞 URL**：URL 类请求必须走 qa-agent（它会按需触发 get-info-agent 联网补库），upload-agent 只处理本地文件。
-3. **不要要求它跳过格式转换**：upload-agent 必须走 `doc-converter.py`——这是唯一保证 frontmatter、doc_id、归档、分块一致的路径。
-4. **支持格式**：`.pdf` `.docx` `.pptx` `.xlsx` `.png` `.jpg` `.jpeg` `.tex` `.txt` `.md` `.markdown`。不支持 `.doc` / `.rtf` / `.epub` / `.html` / `.ppt` / `.xls`——请先另存为支持的格式。
-5. **首次运行会下载约 2GB MinerU 模型**到 `~/.cache`，仅限 PDF/DOCX/PPTX/XLSX/图片；纯 TXT/MD 不受影响。`.tex` 需要系统装 pandoc。
-
-## 4. 输出解读
-
-### 4.1 qa-agent 的输出
-
-qa-agent 的输出是标准 Markdown 文本，结构通常为：
-
-1. **简要答案**：直接回答问题
-2. **关键依据**：引用来源文件路径（`data/docs/chunks/...` 或 `data/docs/raw/...`）
-3. **资料来源说明**：标注来自本地知识库还是新抓取资料
-4. **限制与待确认项**：如有
-5. **📦 固化标注**（如有）：答案来自自进化整理层，格式为 `📦 来自自进化整理层固化答案（skill_id: ..., revision: N, 最后确认 YYYY-MM-DD）`
-
-调用方应将 qa-agent 的 stdout 输出直接作为知识库检索结果使用。
-
-### 4.2 upload-agent 的输出
-
-upload-agent 的输出也是 Markdown 报告，结构通常为：
-
-1. **每个入库文档**：`doc_id` / raw MD 路径 / 原始文件归档路径 / chunks 路径列表
-2. **入库计数**：`chunk_rows` / `question_rows`（来自 `ingest-chunks` 报告）
-3. **失败文件**：输入路径 + 失败阶段（格式检测 / 格式转换 / 分块 / 入库）+ 错误信息
-4. **总结**：成功 / 失败数量
-
-成功后的文档可立即被 qa-agent 检索到（frontmatter `source_type: user-upload`）。
-
-调用方应抓住返回报告的 `doc_id` 列表供后续追溯或检索参考（比如后续问 qa-agent 问题时可以显式提及“请优先从 doc_id=<x> 中找答案”）。
-
-## 4.5 固化反馈（`-c` 参数、仅 qa-agent）
-
-> upload-agent 不涉及固化层，**无需** `-c` 反馈。上传成功后下一次 qa-agent 检索到这些文档的答案才会经历正常的 📦 固化路径。
-
-qa-agent 在完成一次满意问答后，会自动委托 organize-agent 将答案固化到自进化整理层（`data/crystallized/`），初始状态为 `pending`。**调用方必须在拿到答案后发送固化反馈**，否则该固化答案永远停留在 `pending` 状态，无法被后续查询命中复用。
-
-### 反馈判断规则
-
-调用方（通常是上层 Agent 的 LLM）根据用户反应判断反馈类型：
-
-| 用户表现 | 反馈类型 | 说明 |
-|------|------|------|
-| 用户未否定、继续追问相关细节、表示满意 | `confirmed` | **默认行为**：只要用户没有明确否定，就发 confirmed |
-| 用户明确否定（"不对" / "不满意" / "过时了"） | `rejected` | 固化答案将被标记为 rejected，下次不再命中 |
-| 用户主动补充新信息 | `supplement` | 固化答案保留，pitfalls 追加遗漏项 |
-
-### 发送反馈的命令
-
-在第一次调用（获取答案）之后，**同一对话**中用 `-c` 继续发送反馈：
-
-```bash
-# 确认固化（最常见）
-claude -p -c "用户未否定，确认固化上一轮答案" \
-  --plugin-dir "<BRAIN_BASE_PATH>" \
-  --agent brain-base:qa-agent \
-  --dangerously-skip-permissions
-
-# 拒绝固化
-claude -p -c "用户明确否定上一轮答案，拒绝固化" \
-  --plugin-dir "<BRAIN_BASE_PATH>" \
-  --agent brain-base:qa-agent \
-  --dangerously-skip-permissions
-
-# 补充信息
-claude -p -c "用户补充：<补充内容摘要>，更新固化答案" \
-  --plugin-dir "<BRAIN_BASE_PATH>" \
-  --agent brain-base:qa-agent \
-  --dangerously-skip-permissions
-```
-
-### `-p -c` 可以一起用吗？
-
-**可以**。`-c` 是 continue（继续上一次对话），`-p -c "xxx"` 表示在非交互模式下给上次对话发一条后续消息。qa-agent 会识别这条消息为对上一轮答案的反馈，并委托 organize-agent 更新 `user_feedback` 状态。
-
-### 典型调用流程
-
-```
-步骤1: claude -p "问题" --plugin-dir ... --agent qa-agent --dangerously-skip-permissions
-        → 拿到答案（可能含📦固化标注）
-
-步骤2: 判断用户反应
-        → 用户未否定（默认）:
-           claude -p -c "用户未否定，确认固化" --plugin-dir ... --agent qa-agent --dangerously-skip-permissions
-        → 用户否定:
-           claude -p -c "用户否定，拒绝固化" --plugin-dir ... --agent qa-agent --dangerously-skip-permissions
-
-步骤3: 继续执行其他任务
-```
-
-### 不发反馈会怎样？
-
-固化答案停留在 `pending` 状态。`pending` 状态的答案**仍可被命中返回**，但不会自动转为 `confirmed`。长期停留在 `pending` 的答案在 `crystallize-lint` 清理时不会被删除，但无法获得 `last_confirmed_at` 的时间更新，影响新鲜度判断的准确性。
-
-## 5. 前置条件
-
-调用本 skill 前应确认：
-
-1. **Milvus 正在运行**（两个入口都需要）：`docker ps | grep milvus`，若未启动则先 `docker compose up -d`
-2. **bge-m3 模型可用**（两个入口都需要）：`python bin/milvus-cli.py check-runtime --require-local-model --smoke-test`
-3. **brain-base 路径正确**：`--plugin-dir` 指向的目录下必须存在 `.claude-plugin/plugin.json`
-4. **（仅 upload-agent）MinerU / pandoc 按需可用**：`python bin/doc-converter.py check-runtime`。规则：
-   - 处理 PDF / DOCX / PPTX / XLSX / 图片 → MinerU 必须可用（`pip install 'mineru[full]>=3.1,<4.0'`，首次会下载约 2GB 模型）
-   - 处理 `.tex` → pandoc 必须在 PATH。
-   - 处理 `.txt` / `.md` → 无额外依赖
-
-若前置条件不满足：
-
-- qa-agent 仍可运行（降级为纯文件系统 Grep），但检索质量会显著下降。
-- upload-agent 在需要的后端缺失时会 fail-fast并在报告里明确列出缺失工具与安装命令。
-
-## 6. 与其他 skill 的关系
-
-```
-外部 Agent
-  ├─ 入口A（问答）：claude -p "问题" --agent qa-agent --dangerously-skip-permissions
-  │    ├─ qa-workflow（检索 + 证据判断 + 回答）
-  │    ├─ get-info-agent（仅在本地证据不足时自动触发）
-  │    │    ├─ get-info-workflow
-  │    │    ├─ web-research-ingest
-  │    │    ├─ playwright-cli-ops
-  │    │    ├─ knowledge-persistence   ◄ 共享下游
-  │    │    └─ update-priority
-  │    └─ organize-agent（问答成功后自动固化，初始 pending）
-  │         ├─ crystallize-workflow
-  │         └─ crystallize-lint
-  │
-  ├─ 入口B（上传入库）：claude -p "上传指令" --agent upload-agent --dangerously-skip-permissions
-  │    ├─ upload-ingest（用户文档入库 workflow）
-  │    │    ├─ doc-converter（bin/doc-converter.py：MinerU/pandoc 转 MD）
-  │    │    └─ knowledge-persistence   ◄ 共享下游、入库与A路径一致
-  │    └─ （不触发 organize-agent；上传不参与固化）
-  │
-  └─ 固化反馈（仅对 入口A 有效）：claude -p -c "反馈" --agent qa-agent --dangerously-skip-permissions
-       └─ qa-agent 识别反馈 → organize-agent 更新 user_feedback
-```
-
-两条路径在 `knowledge-persistence` 汇合——无论网页补库还是用户上传，分块 / 合成 QA / Milvus 入库完全一致。
-
-本 skill **不替代** `qa-workflow` / `upload-ingest`，而是作为外部 Agent 调用知识库的唯一入口。知识库内部的 Agent 之间仍走 `Agent` tool 直接委托。
-
-## 7. 错误处理
-
-### 7.1 通用（两个入口均适用）
-
-| 情况 | 处理 |
-|------|------|
-| 进程退出码非 0 | 检查 Milvus 是否运行、`--plugin-dir` 是否正确 |
-| 输出为空 | 可能是 prompt 过长或格式异常，缩短重试 |
-| 进程挂起超时 | 可能是模型首载 / MinerU 首次下载 / Playwright 弹窗 / Milvus 连接超时，检查 Docker 与网络 |
-
-### 7.2 qa-agent 独有
-
-| 情况 | 处理 |
-|------|------|
-| 输出含"证据不足" | qa-agent 判定本地无相关资料且未触发补库（可能 prompt 里要求了不补库） |
-| 输出含📦固化标注 | 正常行为，答案来自自进化整理层；记得发 `-c` 反馈 |
-| `-c` 反馈后输出含"已更新" | 正常，organize-agent 已处理反馈 |
-| `-c` 反馈后输出含"无上一轮固化" | 上一轮答案未被固化（可能是一次性问题或证据不足），无需反馈 |
-
-### 7.3 upload-agent 独有
-
-| 情况 | 处理 |
-|------|------|
-| 报告异常含 `mineru not found` / `未找到 mineru 可执行文件` | 安装 MinerU：`pip install 'mineru[full]>=3.1,<4.0'` |
-| 报告异常含 `pandoc not found` | 系统安装 pandoc（`choco install pandoc` / `brew install pandoc` / `apt install pandoc`）；仅 `.tex` 转换需要 |
-| 报告异常含 `不支持的文件格式` | 文件扩展名不在支持列表（`.pdf/.docx/.pptx/.xlsx/.png/.jpg/.jpeg/.tex/.txt/.md`）——先另存为支持格式 |
-| 报告含 `raw 文件已存在` | 已有相同 `doc_id` 的旧文档；重新调用时在 prompt 里要求 `overwrite` 或指定不同的 slug |
-| 报告含 `ingest-chunks 失败` | Milvus 不健康 / bge-m3 模型未就绪；跑 `check-runtime --require-local-model --smoke-test` |
-| 报告显示部分文件成功、部分失败 | 成功文件已入库可用；失败文件单独重试即可，不会影响已成功的 doc_id |
+## 10. 错误处理
+
+| 情况 | 处理建议 |
+|------|----------|
+| `health` 显示 `claude.available=false` | 安装或修正 `claude` 可执行文件路径 |
+| `ask/ingest/...` 返回 `exit_code != 0` | 先看 `result.stderr`，再看 `result.stdout` 是否已有部分结果 |
+| `exists --url` 未命中 | 不代表 Milvus 没有语义相近内容，只代表这个 URL 尚未作为 raw 文档入库 |
+| `ingest-text` 需要网页语义 | 改用 `ingest-url`，不要把网页正文伪装成本地上传 |
+| `feedback` 失败 | 检查 `session_id` 是否来自同一轮 `ask` |
+
+一句话总结：
+**更强的外部 Agent 应把 brain-base 当成“带 JSON 边界的知识基础设施”来调，而不是把它当一堆零散的 Agent Prompt。默认用 `brain-base-cli`，仅在排障时直调 `claude -p`。**
