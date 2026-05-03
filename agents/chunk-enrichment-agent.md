@@ -50,7 +50,7 @@ permissionMode: bypassPermissions
 **格式硬约束**：
 1. frontmatter 必须以 `---` 开头和结尾，闭合的 `---` 绝对不能遗漏。缺少闭合 `---` 会导致 `milvus-cli.py` 解析失败，整个 chunk 被跳过不入库。
 2. frontmatter 和正文之间必须有空行。
-3. **keywords 和 questions 必须用 JSON inline 数组**（如 `["item1", "item2"]`），**禁止用 YAML 多行列表格式**（如 `- item1`）。`_parse_markdown_frontmatter` 逐行按 `:` 分割，多行列表的值会被解析为空字符串。
+3. **keywords 和 questions 必须用 JSON inline 数组**（如 `["item1", "item2"]`），**禁止用多行列表格式**（如 `keywords:` 后跟 `- item1` 这种缩进短横线写法）。`_parse_markdown_frontmatter` 逐行按 `:` 分割，多行列表的值会被解析为空字符串。
 
 ### 步骤5：删除 Milvus 旧行
 

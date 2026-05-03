@@ -185,7 +185,7 @@ url:
 fetched_at: <YYYY-MM-DD，通常是上传日期>
 content_sha256: <正文 body 的 SHA-256，见步骤 4.5>
 summary: <首段摘要，≤ 500 字符>
-keywords: <逗号分隔，由用户提供或后续 organize 补全>
+keywords: ["<由用户提供或后续 organize 补全的关键词>", "..."]
 ---
 
 <原 raw MD 正文>

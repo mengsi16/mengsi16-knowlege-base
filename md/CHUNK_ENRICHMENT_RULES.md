@@ -11,7 +11,7 @@
 **更隐蔽的情况**：当 chunk 正文中恰好包含 `---`（如水平分割线、表格分隔符）时，`split("---", 2)` 不会报错，但会把正文中的 `---` 当成 frontmatter 闭合符，导致 frontmatter 字段被截断、正文前半段被误解析为 frontmatter 内容。
 
 **规则**：
-- frontmatter 必须以 `---` 开头和结尾，形成完整 YAML 块
+- frontmatter 必须以 `---` 开头和结尾，形成完整 frontmatter 块
 - 闭合 `---` 必须在 frontmatter 最后一行（通常是 `fetched_at:` 之后）的下一行
 - frontmatter 和正文之间必须有空行分隔
 - enrichment agent 写完 frontmatter 后必须自检：确认闭合 `---` 存在
@@ -122,8 +122,8 @@ python bin/milvus-cli.py ingest-chunks --chunk-pattern "data/docs/chunks/<doc_id
 
 ## 8. keywords/questions 必须用 JSON inline 数组格式
 
-**问题**：enrichment agent 用 YAML 多行列表格式写 keywords/questions：
-```yaml
+**问题**：enrichment agent 用多行短横线列表写 keywords/questions（也禁止逗号分隔的纯字符串，如 `keywords: a, b, c`）：
+```text
 keywords:
   - item1
   - item2
@@ -132,18 +132,18 @@ questions:
   - 问题2
 ```
 
-但 `_parse_markdown_frontmatter` 用 `line.split(":", 1)` 逐行解析，`keywords:` 行的值是空的，后续 `- item1` 行不含 `:` 被跳过。结果 keywords 和 questions 解析为空字符串，入库后 `questions_count: 0`。
+但 `_parse_markdown_frontmatter` 用 `line.split(":", 1)` 逐行解析，`keywords:` 行的值是空的，后续 `- item1` 行不含 `:` 被跳过。结果 keywords 和 questions 解析为空字符串，入库后 `questions_count: 0`。逗号分隔字符串虽然能解析成功，但和 inline 数组的数据类型不一致，下游过滤/统计行为分叉。
 
 **规则**：
 - keywords 和 questions 必须写成 **JSON inline 数组**：
-  ```yaml
+  ```text
   keywords: ["item1", "item2"]
   questions: ["问题1", "问题2"]
   ```
-- enrichment agent 写完 frontmatter 后必须自检：确认 keywords/questions 是 inline 格式而非多行格式
+- enrichment agent 写完 frontmatter 后必须自检：确认 keywords/questions 是 inline 数组格式（既不是多行短横线列表，也不是逗号分隔字符串）
 - 已在 `chunk-enrichment/SKILL.md` 第 3.5 节强调此约束
 
-**修复脚本**（批量转换多行 YAML 列表为 inline JSON 数组）：
+**修复脚本**（批量转换多行短横线列表或 CSV 字符串为 inline JSON 数组）：
 ```python
 from pathlib import Path
 

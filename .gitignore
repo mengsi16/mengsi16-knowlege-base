@@ -67,4 +67,6 @@ volumes/
 
 volumes/
 
+.playwright-mcp/
+
 

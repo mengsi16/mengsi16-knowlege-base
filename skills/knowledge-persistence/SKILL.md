@@ -37,7 +37,7 @@ raw 文档必须：
 
 1. 保存到 `data/docs/raw/`。
 2. 使用 UTF-8 编码。
-3. 带 YAML metadata（含 `content_sha256` 字段，见 2.1）。
+3. 带 frontmatter（含 `content_sha256` 字段，见 2.1）。
 4. 保留完整正文结构。
 5. `doc_id` 必须带抓取日期，格式：`<topic-slug>-YYYY-MM-DD`。
 6. raw 文件名必须与 `doc_id` 一致。
@@ -92,8 +92,8 @@ source_type: official-doc
 url: https://docs.anthropic.com/...
 fetched_at: 2026-04-18
 summary: 简述本块讲了什么，便于 Grep 与排序
-keywords: claude-code, subagent, 创建, frontmatter
-questions: ["如何在 Claude Code 中创建 subagent?", "subagent 的 YAML frontmatter 必填字段是什么?", "subagent 与 plugin 的关系?"]
+keywords: ["claude-code", "subagent", "创建", "frontmatter"]
+questions: ["如何在 Claude Code 中创建 subagent?", "subagent 的 frontmatter 必填字段是什么?", "subagent 与 plugin 的关系?"]
 ---
 
 # 正文 Markdown ...
@@ -118,7 +118,7 @@ source_type: community
 url: https://blog.example.com/post-1
 fetched_at: 2026-04-18
 summary: 从社区博客提炼的 Subagent 实践要点
-keywords: claude-code, subagent, 社区实践, 经验总结
+keywords: ["claude-code", "subagent", "社区实践", "经验总结"]
 questions: ["社区中常见的 Subagent 配置陷阱有哪些?", "Subagent 与 Tool 的实际使用场景区别是什么?"]
 ---
 
@@ -153,7 +153,7 @@ original_file: data/docs/uploads/my-paper-2026-04-19/my-paper.pdf
 url:
 fetched_at: 2026-04-19
 summary: 简述本块讲了什么，便于 Grep 与排序
-keywords: 深度学习, 模型压缩, 知识蒸馏
+keywords: ["深度学习", "模型压缩", "知识蒸馏"]
 questions: ["知识蒸馏的基本思路是什么?", "学生模型需要多大才足够?", "温度参数如何影响蒸馏效果?"]
 ---
 

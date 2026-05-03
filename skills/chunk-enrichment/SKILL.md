@@ -77,7 +77,7 @@ disable-model-invocation: false
 
 **frontmatter 格式硬约束**：
 
-1. frontmatter 必须以 `---` 开头和结尾，形成完整的 YAML 块：
+1. frontmatter 必须以 `---` 开头和结尾，形成完整的 frontmatter 块：
    ```
    ---
    doc_id: xxx
@@ -90,7 +90,7 @@ disable-model-invocation: false
    ```
 2. **闭合的 `---` 不能遗漏**。`bin/milvus-cli.py` 用 `text.split("---", 2)` 解析，缺少闭合 `---` 会导致整个文件解析失败（返回 None，入库时被跳过）。
 3. frontmatter 和正文之间必须有空行分隔。
-4. **keywords 和 questions 必须用 JSON inline 数组**（如 `["item1", "item2"]`），**禁止用 YAML 多行列表格式**（如 `- item1`）。`_parse_markdown_frontmatter` 用 `line.split(":", 1)` 逐行解析，多行列表格式的值会被解析为空字符串，导致入库后 keywords/questions 丢失。
+4. **keywords 和 questions 必须用 JSON inline 数组**（如 `["item1", "item2"]`），**禁止用多行列表格式**（如 `keywords:` 后跟 `- item1` 这种缩进短横线写法）。`_parse_markdown_frontmatter` 用 `line.split(":", 1)` 逐行解析，多行列表格式的值会被解析为空字符串，导致入库后 keywords/questions 丢失。
 
 如果某 chunk 实在生成不出合理问题（例如纯目录页），允许 `questions: []`，但必须显式写空数组。
 
